@@ -1,0 +1,12 @@
+# Raw data (licensed / copyrighted - see each project's README)
+*.csv
+!**/data/sources.csv
+*.txt
+*.zip
+
+# R / Quarto artefacts
+.Rhistory
+.RData
+.Rproj.user/
+*_files/
+*.html
