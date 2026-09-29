@@ -4,8 +4,8 @@ Statistical analysis in R of **100,000 World Values Survey responses from 58 cou
 South Korea's confidence in institutions (parliament, courts, press, armed forces, civil service, unions)
 differs from the rest of the world, what predicts it, and how it has changed over time.
 
-(<img width="875" height="540" alt="2a_dumbbell" src="https://github.com/user-attachments/assets/2a10c826-4d31-4cfa-80d6-4a285d250ff1" />
-)
+<img width="875" height="540" alt="2a_dumbbell" src="https://github.com/user-attachments/assets/370e152b-3041-4aa9-b16a-07eab0ce86c4" />
+
 
 ## Key findings
 
@@ -36,7 +36,9 @@ differs from the rest of the world, what predicts it, and how it has changed ove
 
 | | |
 |---|---|
-| ![](figures/2c_heatmap_predictors.png) | ![](figures/3a_direction_magnitude.png) |
+| ![]<img width="875" height="540" alt="2c_heatmap_predictors" src="https://github.com/user-attachments/assets/05e44de3-219c-4e24-a072-96523d26ace3" />
+ | ![]<img width="875" height="540" alt="3a_direction_magnitude" src="https://github.com/user-attachments/assets/ecb5f4f1-ef99-4c2d-95b4-49b79deccb56" />
+ |
 | Standardised predictor effects by institution | Where Korea's trends diverge over time |
 
 ## Tech stack
