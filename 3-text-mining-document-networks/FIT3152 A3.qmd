@@ -1,0 +1,998 @@
+---
+title: "FIT3152_A3"
+format: html
+editor: visual
+---
+
+```{r}
+library(slam) # for matrices and arrays
+library(tm)
+library(SnowballC)  # for stemming
+library(knitr)
+library(kableExtra)
+library(SentimentAnalysis)
+```
+
+# Task 3
+
+```{r}
+# -Load corpus from folder
+corpus_dir <- "Corpus" 
+
+docs <- VCorpus(DirSource(corpus_dir, encoding = "UTF-8"),
+                readerControl = list(language = "en"))
+
+# Verify documents loaded
+cat("Number of documents:", length(docs), "\n")
+cat("Document names:\n")
+print(names(docs))
+
+# Text transformations / cleaning
+
+# Convert to lowercase
+docs <- tm_map(docs, content_transformer(tolower))
+
+# Remove URLs (common artefact in web-scraped text)
+remove_url <- function(x) gsub("http\\S+|www\\.\\S+", "", x)
+docs <- tm_map(docs, content_transformer(remove_url))
+
+# Remove numbers
+docs <- tm_map(docs, removeNumbers)
+
+# Remove punctuation
+docs <- tm_map(docs, removePunctuation)
+
+# Remove common English stopwords
+custom_stopwords <- c(stopwords("english"),
+                      "also", "can", "just", "like", "even", "still",
+                      "want", "know", "will", "one", "need", "get", 
+                      "now", "fine", "turn")
+docs <- tm_map(docs, removeWords, custom_stopwords)
+
+# Strip extra whitespace
+docs <- tm_map(docs, stripWhitespace)
+
+# Stem words (reduce to root form)
+docs <- tm_map(docs, stemDocument)
+
+# Build the Document-Term Matrix
+dtm <- DocumentTermMatrix(docs)
+
+cat("\nDTM dimensions (before sparsity removal):",
+    dim(dtm)[1], "documents x", dim(dtm)[2], "terms\n")
+
+# Remove sparse terms
+dtm_sparse <- removeSparseTerms(dtm, sparse = 0.65)
+
+cat("DTM dimensions (after sparsity removal):",
+    dim(dtm_sparse)[1], "documents x", dim(dtm_sparse)[2], "terms\n")
+
+# Check how many tokens remain
+cat("Tokens retained:", ncol(dtm_sparse), "\n")
+cat("Terms:\n")
+print(Terms(dtm_sparse))
+
+# Inspect and display the DTM
+dtm_matrix <- as.matrix(dtm_sparse)
+print(dtm_matrix)
+
+```
+
+# Task 4
+
+```{r}
+library(proxy)       # cosine distance
+library(igraph)      # network graphs
+library(ggplot2)     # plotting
+library(RColorBrewer)
+library(dendextend)
+```
+
+```{r}
+# Cosine distance matrix from DTM
+dtm_matrix <- as.matrix(dtm_sparse)
+cosine_dist <- dist(dtm_matrix, method = "cosine")
+
+# Hierarchical clustering (Ward's method)
+hclust_result <- hclust(cosine_dist, method = "ward.D2")
+
+# Genre labels for colouring
+genres <- c(rep("Music", 5), rep("News", 5), rep("Recipe", 5), rep("Review", 5))
+genre_colours <- c("Music" = "steelblue", "News" = "tomato",
+                   "Recipe" = "forestgreen", "Review" = "purple")
+label_colours <- genre_colours[genres]
+
+# Plot dendrogram
+plot(hclust_result,
+     main = "Hierarchical Clustering of Corpus (Cosine Distance)",
+     xlab = "", sub = "",
+     ylab = "Height",
+     cex = 0.8)
+
+# Colour leaf labels by genre
+dend <- as.dendrogram(hclust_result)
+dend <- color_labels(dend, col = label_colours[order.dendrogram(dend)])
+plot(dend, main = "Hierarchical Clustering by Genre (Cosine Distance)")
+legend("topleft", 
+       legend = names(genre_colours),
+       fill   = genre_colours, 
+       title  = "Genre", 
+       cex    = 0.8,
+       inset  = c(0.01, 0.01),  # slight padding from corner
+       bg     = "white",         # white background so it's readable
+       box.lty = 1)
+
+# Cut tree into k clusters
+k <- 4
+clusters <- cutree(hclust_result, k = k)
+cat("Cluster assignments:\n")
+print(clusters)
+
+# Accuracy: compare clusters to true genres
+genre_labels <- rep(c("Music","News","Recipe","Review"), each = 5)
+cluster_df <- data.frame(doc = names(clusters),
+                         cluster = clusters,
+                         genre = genre_labels)
+cat("\nCluster vs Genre table:\n")
+print(table(cluster_df$cluster, cluster_df$genre))
+
+# Acuracy: majority genre per cluster
+cluster_accuracy <- function(clusters, genres) {
+  df <- data.frame(cluster = clusters, genre = genres)
+  correct <- sum(sapply(unique(clusters), function(c) {
+    sub <- df[df$cluster == c, "genre"]
+    max(table(sub))
+  }))
+  correct / length(genres)
+}
+acc <- cluster_accuracy(clusters, genre_labels)
+cat(sprintf("\nClustering accuracy: %.1f%%\n", acc * 100))
+```
+
+```{r}
+# Confusion Matrix
+
+# Map cluster numbers to genre names by majority vote
+cluster_to_genre <- sapply(1:k, function(c) {
+  sub <- genre_labels[clusters == c]
+  names(which.max(table(sub)))
+})
+cat("Cluster to Genre mapping:\n")
+print(data.frame(Cluster = 1:k, Assigned_Genre = cluster_to_genre))
+
+# Predict genre for each document
+predicted_genre <- factor(cluster_to_genre[clusters], 
+                          levels = c("Music","News","Recipe","Review"))
+actual_genre    <- factor(genre_labels, 
+                          levels = c("Music","News","Recipe","Review"))
+
+# Confusion matrix (Actual = rows, Predicted = columns)
+conf_table <- table(Actual = actual_genre, Predicted = predicted_genre)
+cat("\nConfusion Matrix (Actual vs Predicted):\n")
+print(conf_table)
+
+# Per-cluster accuracy
+per_cluster_acc <- sapply(c("Music","News","Recipe","Review"), function(g) {
+  row <- conf_table[g, ]
+  round(max(row) / sum(row), 2)
+})
+cat("\nPer-Genre Accuracy:\n")
+print(data.frame(Genre = names(per_cluster_acc), Accuracy = per_cluster_acc))
+
+# Overall accuracy
+overall_acc <- sum(diag(conf_table)) / sum(conf_table)
+cat(sprintf("\nOverall Accuracy: %.1f%%\n", overall_acc * 100))
+```
+
+```{r}
+# Table 4.4: Top distinctive terms per genre
+genre_labels <- rep(c("Music","News","Recipe","Review"), each = 5)
+
+# Sum term frequencies by genre
+genre_term_matrix <- aggregate(dtm_matrix, 
+                                by = list(Genre = genre_labels), 
+                                FUN = sum)
+
+# Set genre names as row names
+rownames(genre_term_matrix) <- genre_term_matrix$Genre
+genre_term_matrix$Genre <- NULL
+
+# Print top 5 terms per genre
+for (g in c("Music", "News", "Recipe", "Review")) {
+  row <- as.numeric(genre_term_matrix[g, ])          # convert to numeric vector
+  names(row) <- colnames(genre_term_matrix)           # restore term names
+  row_sorted <- sort(row, decreasing = TRUE)          # now sort works
+  cat(g, ":", paste(names(row_sorted)[1:5], collapse = ", "), "\n")
+}
+```
+
+# Task 5
+
+```{r}
+# Analyse sentiment directly from corpus
+# Standard NLP tokenizing performed automatically
+SentimentA <- analyzeSentiment(docs)
+
+cat("Sentiment scores:\n")
+print(SentimentA)
+
+# Add genre labels
+SentimentA$genre <- genre_labels
+
+# Mean by genre
+cat("\nMean SentimentGI by genre:\n")
+print(aggregate(SentimentGI ~ genre, data = SentimentA, FUN = mean))
+
+cat("\nMean PositivityGI by genre:\n")
+print(aggregate(PositivityGI ~ genre, data = SentimentA, FUN = mean))
+
+# SD by genre
+cat("\nSD SentimentGI by genre:\n")
+print(aggregate(SentimentGI ~ genre, data = SentimentA, FUN = sd))
+
+# Boxplots (4 measures like lecture slide 24)
+par(mfrow = c(2, 2))
+boxplot(WordCount   ~ genre, data = SentimentA, main = "Word Count",
+        col = c("steelblue","tomato","forestgreen","purple"), frame = TRUE)
+boxplot(SentimentGI ~ genre, data = SentimentA, main = "Sentiment GI",
+        col = c("steelblue","tomato","forestgreen","purple"), frame = TRUE)
+boxplot(PositivityGI ~ genre, data = SentimentA, main = "Positivity GI",
+        col = c("steelblue","tomato","forestgreen","purple"), frame = TRUE)
+boxplot(NegativityGI ~ genre, data = SentimentA, main = "Negativity GI",
+        col = c("steelblue","tomato","forestgreen","purple"), frame = TRUE)
+par(mfrow = c(1, 1))
+
+# ANOVA: test if SentimentGI differs significantly across genres
+anova_result <- aov(SentimentGI ~ genre, data = SentimentA)
+cat("\nANOVA result (SentimentGI):\n")
+print(summary(anova_result))
+
+kable(aggregate(SentimentGI ~ genre, data = SentimentA, FUN = mean),
+      col.names = c("Genre", "Mean SentimentGI"),
+      digits  = 4,
+      caption = "Table 5.1 - Mean Sentiment (GI Dictionary) by Genre")
+
+kable(aggregate(SentimentGI ~ genre, data = SentimentA, FUN = sd),
+      col.names = c("Genre", "SD SentimentGI"),
+      digits  = 4,
+      caption = "Table 5.2 - Sentiment Variability by Genre")
+```
+
+# Task 6
+
+```{r}
+# Helper: rescale vector to a range
+rescale <- function(x, to = c(0, 1)) {
+  if (max(x) == min(x)) return(rep(mean(to), length(x)))
+  (x - min(x)) / (max(x) - min(x)) * (to[2] - to[1]) + to[1]
+}
+
+# Binary DTM
+dtm_binary <- as.matrix(dtm_sparse)
+dtm_binary[dtm_binary > 0] <- 1
+
+kable(dtm_binary,
+      caption  = "Table 6.1 – Binary Document-Term Matrix",
+      booktabs = FALSE) |>
+  kable_styling(bootstrap_options = c("striped", "condensed", "bordered"),
+                full_width = FALSE,
+                font_size  = 10)
+
+# Shared Term Matrix
+doc_adj <- dtm_binary %*% t(dtm_binary)
+diag(doc_adj) <- 0
+
+kable(doc_adj,
+      caption  = "Table 6.2 – Shared Term Matrix (Document Adjacency)",
+      booktabs = FALSE) |>
+  kable_styling(bootstrap_options = c("striped", "condensed", "bordered"),
+                full_width = FALSE,
+                font_size  = 10)
+
+# Build graph
+doc_graph_basic <- graph_from_adjacency_matrix(
+  doc_adj,
+  mode     = "undirected",
+  weighted = TRUE,
+  diag     = FALSE
+)
+
+# Basic plot
+set.seed(42)
+plot(doc_graph_basic,
+     vertex.label     = gsub("\\.txt", "", V(doc_graph_basic)$name),
+     vertex.label.cex = 0.7,
+     main             = "Figure 6.1 – Document Network (Basic)")
+
+# Improved plot 
+doc_graph <- doc_graph_basic
+
+# Genre colours
+genre_col <- c(
+  Music  = "#FFD700",  # gold
+  News   = "#FF4500",  # orange-red
+  Recipe = "#00CC44",  # green
+  Review = "#9933FF"   # purple
+)
+
+V(doc_graph)$genre <- genre_labels
+V(doc_graph)$color <- genre_col[V(doc_graph)$genre]
+
+# Degree centrality → node size
+deg <- degree(doc_graph)
+
+V(doc_graph)$size <- rescale(
+  deg,
+  to = c(12, 35)
+)
+
+# Edge width = similarity
+E(doc_graph)$width <- rescale(
+  E(doc_graph)$weight,
+  to = c(0.5, 6)
+)
+
+# Edge transparency
+edge_alpha <- rescale(
+  E(doc_graph)$weight,
+  to = c(0.15, 0.85)
+)
+
+E(doc_graph)$color <- rgb(
+  0.4, 0.4, 0.4,
+  alpha = edge_alpha
+)
+
+# Sentiment border colour
+sent_scores <- SentimentA$SentimentGI
+
+sent_norm <- rescale(
+  sent_scores,
+  to = c(0, 1)
+)
+
+sent_pal <- colorRamp(
+  c("red", "white", "dodgerblue")
+)
+
+sent_rgb <- sent_pal(sent_norm)
+
+V(doc_graph)$frame.color <- rgb(
+  sent_rgb[,1],
+  sent_rgb[,2],
+  sent_rgb[,3],
+  maxColorValue = 255
+)
+
+# Community detection
+set.seed(42)
+
+community <- cluster_louvain(doc_graph)
+
+V(doc_graph)$community <- membership(community)
+
+
+# Layout
+set.seed(42)
+
+layout_fr <- layout_with_fr(
+  doc_graph,
+  niter = 2000
+)
+
+# Plot with community hulls using mark.groups (cleaner)
+# Get community membership
+comm_members <- membership(community)
+n_comm <- length(unique(comm_members))
+
+# One hull colour per community
+hull_fills   <- adjustcolor(c("cyan", "pink", "lightgreen", "lightyellow"), alpha.f = 0.25)
+hull_borders <- adjustcolor(c("cyan", "pink", "lightgreen", "lightyellow"), alpha.f = 0.60)
+
+# Build mark.groups list
+mark_groups <- lapply(sort(unique(comm_members)), function(i) {
+  which(comm_members == i)
+})
+
+par(mar = c(2, 1, 4, 10))
+
+plot(
+  doc_graph,
+  layout             = layout_fr,
+  mark.groups        = mark_groups,
+  mark.col           = hull_fills[1:n_comm],
+  mark.border        = hull_borders[1:n_comm],
+  vertex.label       = gsub("\\.txt", "", V(doc_graph)$name),
+  vertex.label.cex   = 0.70,
+  vertex.label.font  = 2,
+  vertex.label.color = "black",
+  vertex.size        = V(doc_graph)$size,
+  vertex.color       = V(doc_graph)$color,
+  vertex.frame.color = V(doc_graph)$frame.color,
+  vertex.frame.width = 3,
+  edge.width         = E(doc_graph)$width,
+  edge.color         = E(doc_graph)$color,
+  edge.curved        = 0.25,
+  main               = "Figure 6.2 – Document Network (Improved)\nNode size = degree centrality  |  Edge width = similarity  |  Border = sentiment"
+)
+
+# Genre legend
+legend(
+  x      = par("usr")[2] + 0.05,
+  y      = par("usr")[4],
+  legend = names(genre_col),
+  fill   = genre_col,
+  title  = "Genre (fill)",
+  cex    = 0.8,
+  bty    = "n",
+  xpd    = TRUE
+)
+
+# Sentiment legend
+legend(
+  x      = par("usr")[2] + 0.05,
+  y      = par("usr")[4] - 1,
+  legend = c("Positive", "Neutral", "Negative"),
+  fill   = c("dodgerblue", "white", "red"),
+  border = "grey50",
+  title  = "Sentiment GI\n(border colour)",
+  cex    = 0.8,
+  bty    = "n",
+  xpd    = TRUE
+)
+
+par(mar = c(5, 4, 4, 2))
+
+# Centrality table 
+centrality_df <- data.frame(
+  Document    = gsub("\\.txt", "", V(doc_graph)$name),
+  Genre       = V(doc_graph)$genre,
+  Degree      = degree(doc_graph),
+  Closeness   = round(closeness(doc_graph, normalized = TRUE), 4),
+  Betweenness = round(betweenness(doc_graph, normalized = TRUE), 4),
+  Eigenvector = round(eigen_centrality(doc_graph)$vector, 4),
+  Sentiment   = round(sent_scores, 4),
+  stringsAsFactors = FALSE
+)
+
+centrality_df <- centrality_df[order(-centrality_df$Degree), ]
+
+kable(centrality_df,
+      caption   = "Table 6.3 – Document Centrality Measures (sorted by Degree)",
+      row.names = FALSE,
+      col.names = c("Document", "Genre", "Degree",
+                    "Closeness (norm.)", "Betweenness (norm.)",
+                    "Eigenvector", "Sentiment GI")) |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE) |>
+  row_spec(0, bold = TRUE) |>
+  column_spec(3, bold = TRUE)
+
+# Top 5 rankings table
+top_n <- 5
+
+rankings_table <- data.frame(
+  Rank                   = 1:top_n,
+  `Ranked by Betweenness` = centrality_df$Document[order(-centrality_df$Betweenness)][1:top_n],
+  `Ranked by Closeness`   = centrality_df$Document[order(-centrality_df$Closeness)][1:top_n],
+  `Ranked by Eigenvector` = centrality_df$Document[order(-centrality_df$Eigenvector)][1:top_n],
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+
+kable(rankings_table,
+      caption   = "Table 6.4 – Top 5 Documents by Centrality Measure",
+      row.names = FALSE) |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE) |>
+  row_spec(0, bold = TRUE)
+
+# Community membership table ---
+community_df <- data.frame(
+  Document  = gsub("\\.txt", "", names(membership(community))),
+  Genre     = genre_labels,
+  Community = membership(community),
+  Degree    = degree(doc_graph)[names(membership(community))],
+  Sentiment = round(sent_scores, 4),
+  stringsAsFactors = FALSE
+)
+community_df <- community_df[order(community_df$Community, community_df$Genre), ]
+
+kable(community_df,
+      caption   = "Table 6.5 – Community Membership with Sentiment",
+      row.names = FALSE,
+      col.names = c("Document", "Genre", "Community", "Degree", "Sentiment GI")) |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE) |>
+  row_spec(0, bold = TRUE)
+
+# Confusion table + accuracy
+conf_table <- table(Genre     = community_df$Genre,
+                    Community = community_df$Community)
+
+kable(as.data.frame.matrix(conf_table),
+      caption = "Table 6.6 – Community Detection vs Genre (Confusion Matrix)") |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE) |>
+  add_header_above(c(" " = 1, "Detected Community" = ncol(conf_table))) |>
+  row_spec(0, bold = TRUE)
+
+n_correct <- sum(apply(conf_table, 2, max))
+accuracy  <- n_correct / nrow(community_df)
+cat(sprintf("Community Detection Accuracy (best-match): %.4f (%.1f%%)\n",
+            accuracy, accuracy * 100))
+
+# Isolated documents
+isolated <- V(doc_graph)$name[degree(doc_graph) == 0]
+if (length(isolated) > 0) {
+  kable(data.frame(Isolated_Documents = gsub("\\.txt", "", isolated)),
+        caption = "Table 6.7 – Isolated Documents (no shared terms)") |>
+    kable_styling(bootstrap_options = c("striped"), full_width = FALSE)
+} else {
+  cat("No isolated documents — all documents share at least one term.\n")
+}
+```
+
+# Task 7
+
+```{r}
+# Transpose DTM to get Term-Document Matrix 
+# Columns = documents, Rows = tokens
+# Binary version: 1 if token appears in document, 0 otherwise
+tdm_binary <- t(dtm_binary)   # reuse binary DTM from Task 6
+
+# Token Co-occurrence Matrix (Shared Term Matrix)
+# Multiply TDM by its transpose → 26x26 adjacency matrix
+# Each cell = number of documents both tokens co-occur in
+token_adj <- tdm_binary %*% t(tdm_binary)
+diag(token_adj) <- 0   # remove self-connections
+
+kable(token_adj,
+      caption  = "Table 7.1 – Token Co-occurrence Matrix",
+      booktabs = FALSE) |>
+  kable_styling(bootstrap_options = c("striped", "condensed", "bordered"),
+                full_width = FALSE,
+                font_size  = 10)
+
+# Build basic token graph 
+token_graph_basic <- graph_from_adjacency_matrix(
+  token_adj,
+  mode     = "undirected",
+  weighted = TRUE,
+  diag     = FALSE
+)
+
+# Basic plot
+set.seed(42)
+plot(token_graph_basic,
+     vertex.label     = V(token_graph_basic)$name,
+     vertex.label.cex = 0.7,
+     main             = "Figure 7.1 – Token Network (Basic)")
+
+# Improved Token Network
+token_graph <- token_graph_basic
+
+# Node size = degree centrality (how many other tokens
+# this token co-occurs with)
+tok_deg <- degree(token_graph)
+
+V(token_graph)$size <- rescale(tok_deg, to = c(8, 30))
+
+# Node colour = eigenvector centrality band
+tok_eig <- eigen_centrality(token_graph)$vector
+
+eig_norm   <- rescale(tok_eig, to = c(0, 1))
+eig_pal    <- colorRamp(c("#d0e8ff", "#1a6bbf"))   # light → deep blue
+eig_rgb    <- eig_pal(eig_norm)
+V(token_graph)$color <- rgb(eig_rgb[,1], eig_rgb[,2], eig_rgb[,3],
+                             maxColorValue = 255)
+
+# Edge width + transparency = co-occurrence strength
+E(token_graph)$width <- rescale(E(token_graph)$weight, to = c(0.3, 6))
+
+edge_alpha_tok <- rescale(E(token_graph)$weight, to = c(0.10, 0.80))
+E(token_graph)$color <- rgb(0.4, 0.4, 0.4, alpha = edge_alpha_tok)
+
+# Node label size scales with degree 
+V(token_graph)$label.cex <- rescale(tok_deg, to = c(0.55, 1.0))
+
+# Community detection (Louvain)
+set.seed(42)
+tok_community  <- cluster_louvain(token_graph)
+tok_membership <- membership(tok_community)
+V(token_graph)$community <- tok_membership
+
+# Hull colours
+n_tok_comm     <- length(unique(tok_membership))
+tok_hull_fills   <- adjustcolor(
+  c("pink","cyan","lightgreen","lightyellow","lightsalmon"),
+  alpha.f = 0.25)[1:n_tok_comm]
+tok_hull_borders <- adjustcolor(
+  c("pink","cyan","lightgreen","lightyellow","lightsalmon"),
+  alpha.f = 0.60)[1:n_tok_comm]
+
+tok_mark_groups <- lapply(sort(unique(tok_membership)), function(i) {
+  which(tok_membership == i)
+})
+
+
+# Layout
+set.seed(42)
+tok_layout <- layout_with_fr(token_graph, niter = 2000)
+
+# Plot
+par(mar = c(2, 1, 4, 10))
+
+plot(
+  token_graph,
+  layout             = tok_layout,
+  mark.groups        = tok_mark_groups,
+  mark.col           = tok_hull_fills,
+  mark.border        = tok_hull_borders,
+  vertex.label       = V(token_graph)$name,
+  vertex.label.cex   = V(token_graph)$label.cex,
+  vertex.label.font  = 2,
+  vertex.label.color = "black",
+  vertex.size        = V(token_graph)$size,
+  vertex.color       = V(token_graph)$color,
+  vertex.frame.color = "grey40",
+  edge.width         = E(token_graph)$width,
+  edge.color         = E(token_graph)$color,
+  edge.curved        = 0.2,
+  main               = "Figure 7.2 – Token Network (Improved)"
+)
+
+# Eigenvector centrality colour legend
+legend(
+  x      = par("usr")[2] + 0.05,
+  y      = par("usr")[4],
+  legend = c("High influence", "Low influence"),
+  fill   = c("#1a6bbf", "#d0e8ff"),
+  title  = "Eigenvector\nCentrality",
+  cex    = 0.8,
+  bty    = "n",
+  xpd    = TRUE
+)
+
+par(mar = c(5, 4, 4, 2))
+
+# Token Centrality Table
+tok_centrality_df <- data.frame(
+  Token       = V(token_graph)$name,
+  Degree      = degree(token_graph),
+  Closeness   = round(closeness(token_graph, normalized = TRUE), 4),
+  Betweenness = round(betweenness(token_graph, normalized = TRUE), 4),
+  Eigenvector = round(eigen_centrality(token_graph)$vector, 4),
+  Community   = tok_membership,
+  stringsAsFactors = FALSE
+)
+
+tok_centrality_df <- tok_centrality_df[order(-tok_centrality_df$Degree), ]
+
+kable(tok_centrality_df,
+      caption   = "Table 7.2 – Token Centrality Measures (sorted by Degree)",
+      row.names = FALSE,
+      col.names = c("Token", "Degree", "Closeness (norm.)",
+                    "Betweenness (norm.)", "Eigenvector", "Community")) |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE) |>
+  row_spec(0, bold = TRUE) |>
+  column_spec(2, bold = TRUE)
+
+# Top 5 rankings
+top_n <- 5
+
+tok_rankings <- data.frame(
+  Rank                    = 1:top_n,
+  `Ranked by Betweenness` = tok_centrality_df$Token[order(-tok_centrality_df$Betweenness)][1:top_n],
+  `Ranked by Closeness`   = tok_centrality_df$Token[order(-tok_centrality_df$Closeness)][1:top_n],
+  `Ranked by Eigenvector` = tok_centrality_df$Token[order(-tok_centrality_df$Eigenvector)][1:top_n],
+  check.names      = FALSE,
+  stringsAsFactors = FALSE
+)
+
+kable(tok_rankings,
+      caption   = "Table 7.3 – Top 5 Tokens by Centrality Measure",
+      row.names = FALSE) |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE) |>
+  row_spec(0, bold = TRUE)
+
+# Community membership table
+tok_community_df <- data.frame(
+  Token     = V(token_graph)$name,
+  Community = tok_membership,
+  Degree    = degree(token_graph),
+  Eigenvector = round(eigen_centrality(token_graph)$vector, 4),
+  stringsAsFactors = FALSE
+)
+tok_community_df <- tok_community_df[order(tok_community_df$Community,
+                                            -tok_community_df$Degree), ]
+
+kable(tok_community_df,
+      caption   = "Table 7.4 – Token Community Membership",
+      row.names = FALSE,
+      col.names = c("Token", "Community", "Degree", "Eigenvector")) |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE) |>
+  row_spec(0, bold = TRUE)
+
+# Isolated tokens check
+isolated_tok <- V(token_graph)$name[degree(token_graph) == 0]
+if (length(isolated_tok) > 0) {
+  kable(data.frame(Isolated_Tokens = isolated_tok),
+        caption = "Table 7.5 – Isolated Tokens") |>
+    kable_styling(bootstrap_options = c("striped"), full_width = FALSE)
+} else {
+  cat("No isolated tokens — all tokens co-occur with at least one other token.\n")
+}
+```
+
+# Task 8
+
+```{r}
+# Transform DTM into edge list format
+# Each row = one document-token pair where token appears in document
+dtm_matrix_full <- as.matrix(dtm_sparse)
+
+# Convert to long-format data frame (document, token, weight)
+bip_edges <- which(dtm_matrix_full > 0, arr.ind = TRUE)
+bip_df <- data.frame(
+  document = rownames(dtm_matrix_full)[bip_edges[, 1]],
+  token    = colnames(dtm_matrix_full)[bip_edges[, 2]],
+  weight   = dtm_matrix_full[bip_edges],
+  stringsAsFactors = FALSE
+)
+
+# Clean document names
+bip_df$document <- gsub("\\.txt", "", bip_df$document)
+
+cat("Number of document-token edges:", nrow(bip_df), "\n")
+cat("Unique documents:", length(unique(bip_df$document)), "\n")
+cat("Unique tokens:", length(unique(bip_df$token)), "\n")
+
+# Build bipartite graph
+bip_graph <- graph_from_data_frame(bip_df, directed = FALSE)
+
+# Mark node types: TRUE = document, FALSE = token
+V(bip_graph)$type <- V(bip_graph)$name %in% bip_df$document
+
+cat("\nNode types:\n")
+cat("Document nodes:", sum(V(bip_graph)$type), "\n")
+cat("Token nodes:", sum(!V(bip_graph)$type), "\n")
+
+# Verify bipartite structure
+cat("Is bipartite:", is_bipartite(bip_graph), "\n")
+
+# Basic bipartite plot
+set.seed(42)
+
+# Use bipartite layout
+bip_layout <- layout_as_bipartite(bip_graph)
+
+# Swap axes: documents on left, tokens on right (horizontal layout)
+bip_layout_h <- bip_layout[, c(2, 1)]
+
+plot(
+  bip_graph,
+  layout           = bip_layout_h,
+  vertex.shape     = ifelse(V(bip_graph)$type, "circle", "square"),
+  vertex.color     = ifelse(V(bip_graph)$type, "steelblue", "orange"),
+  vertex.size      = 8,
+  vertex.label.cex = 0.6,
+  vertex.label.color = "black",
+  edge.width       = 0.5,
+  edge.color       = "grey70",
+  main             = "Figure 8.1 – Bipartite Network (Basic)\nCircles = Documents  |  Squares = Tokens"
+)
+
+legend("bottomleft",
+       legend = c("Document", "Token"),
+       pch    = c(21, 22),
+       pt.bg  = c("steelblue", "orange"),
+       pt.cex = 1.5,
+       cex    = 0.8,
+       bty    = "n")
+
+# Improved Bipartite Plot
+bip_imp <- bip_graph
+
+# Node colour
+# Documents → coloured by genre
+# Tokens    → coloured by degree (how many docs they appear in)
+
+# Genre colours for document nodes (reuse from Task 6)
+doc_names_clean <- gsub("\\.txt", "", names(docs))
+
+V(bip_imp)$genre <- ifelse(
+  V(bip_imp)$type,
+  genre_labels[match(V(bip_imp)$name, doc_names_clean)],
+  "Token"
+)
+
+genre_col_bip <- c(
+  Music  = "#FFD700",
+  News   = "#FF4500",
+  Recipe = "#00CC44",
+  Review = "#9933FF",
+  Token  = "#FF8C00"   # orange for token nodes
+)
+
+V(bip_imp)$color <- genre_col_bip[V(bip_imp)$genre]
+
+# Node size
+# Documents → scaled by degree (number of tokens used)
+# Tokens    → scaled by degree (number of documents appeared in)
+bip_deg <- degree(bip_imp)
+
+V(bip_imp)$size <- rescale(bip_deg, to = c(6, 28))
+
+
+# Node shape
+# Documents = circle, Tokens = square
+V(bip_imp)$shape <- ifelse(V(bip_imp)$type, "circle", "square")
+
+# Node border colour for documents = sentiment
+sent_norm_bip <- rescale(sent_scores, to = c(0, 1))
+sent_pal_bip  <- colorRamp(c("red", "white", "dodgerblue"))
+sent_rgb_bip  <- sent_pal_bip(sent_norm_bip)
+sent_colors_bip <- rgb(sent_rgb_bip[,1], sent_rgb_bip[,2], sent_rgb_bip[,3],
+                        maxColorValue = 255)
+
+# Apply border colour: sentiment for docs, grey for tokens
+V(bip_imp)$frame.color <- ifelse(
+  V(bip_imp)$type,
+  sent_colors_bip[match(V(bip_imp)$name, doc_names_clean)],
+  "grey40"
+)
+
+
+# Edge width = term frequency weight
+E(bip_imp)$width <- rescale(E(bip_imp)$weight, to = c(0.3, 4))
+
+edge_alpha_bip  <- rescale(E(bip_imp)$weight, to = c(0.15, 0.75))
+E(bip_imp)$color <- rgb(0.4, 0.4, 0.4, alpha = edge_alpha_bip)
+
+# Layout — Fruchterman-Reingold separates the two node
+# types better than bipartite layout for dense graphs
+set.seed(42)
+bip_layout_fr <- layout_with_fr(bip_imp, niter = 3000)
+
+# Plot
+par(mar = c(2, 1, 4, 11))
+
+plot(
+  bip_imp,
+  layout             = bip_layout_fr,
+  vertex.shape       = V(bip_imp)$shape,
+  vertex.size        = V(bip_imp)$size,
+  vertex.color       = V(bip_imp)$color,
+  vertex.frame.color = V(bip_imp)$frame.color,
+  vertex.frame.width = 2.5,
+  vertex.label       = V(bip_imp)$name,
+  vertex.label.cex   = ifelse(V(bip_imp)$type, 0.65, 0.60),
+  vertex.label.font  = 2,
+  vertex.label.color = "black",
+  edge.width         = E(bip_imp)$width,
+  edge.color         = E(bip_imp)$color,
+  edge.curved        = 0.15,
+  main               = "Figure 8.2 – Bipartite Network (Improved)"
+)
+
+# Genre legend (document nodes)
+legend(
+  x      = par("usr")[2] + 0.05,
+  y      = par("usr")[4],
+  legend = c("Music", "News", "Recipe", "Review"),
+  fill   = c("#FFD700", "#FF4500", "#00CC44", "#9933FF"),
+  title  = "Document Genre\n(circle fill)",
+  cex    = 0.8,
+  bty    = "n",
+  xpd    = TRUE
+)
+
+# Token legend
+legend(
+  x      = par("usr")[2] + 0.05,
+  y      = par("usr")[4] - 0.8,
+  legend = "Token",
+  fill   = "#FF8C00",
+  title  = "Token nodes\n(squares)",
+  cex    = 0.8,
+  bty    = "n",
+  xpd    = TRUE
+)
+
+# Sentiment legend
+legend(
+  x      = par("usr")[2] + 0.05,
+  y      = par("usr")[4] - 1.5,
+  legend = c("Positive", "Neutral", "Negative"),
+  fill   = c("dodgerblue", "white", "red"),
+  border = "grey50",
+  title  = "Sentiment GI\n(doc border)",
+  cex    = 0.8,
+  bty    = "n",
+  xpd    = TRUE
+)
+
+par(mar = c(5, 4, 4, 2))
+
+# Centrality tables
+# Separate document and token nodes
+doc_nodes   <- V(bip_imp)$name[V(bip_imp)$type]
+token_nodes <- V(bip_imp)$name[!V(bip_imp)$type]
+
+# Document centrality
+doc_centrality_df <- data.frame(
+  Document    = doc_nodes,
+  Genre       = genre_labels[match(doc_nodes, doc_names_clean)],
+  Degree      = degree(bip_imp)[doc_nodes],
+  Closeness   = round(closeness(bip_imp, normalized = TRUE)[doc_nodes], 4),
+  Betweenness = round(betweenness(bip_imp, normalized = TRUE)[doc_nodes], 4),
+  Sentiment   = round(sent_scores[match(doc_nodes, doc_names_clean)], 4),
+  stringsAsFactors = FALSE
+)
+doc_centrality_df <- doc_centrality_df[order(-doc_centrality_df$Degree), ]
+
+kable(doc_centrality_df,
+      caption   = "Table 8.1 – Document Node Centrality in Bipartite Network",
+      row.names = FALSE,
+      col.names = c("Document", "Genre", "Degree",
+                    "Closeness (norm.)", "Betweenness (norm.)", "Sentiment GI")) |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE) |>
+  row_spec(0, bold = TRUE) |>
+  column_spec(3, bold = TRUE)
+
+# Token centrality
+tok_centrality_bip_df <- data.frame(
+  Token       = token_nodes,
+  Degree      = degree(bip_imp)[token_nodes],
+  Closeness   = round(closeness(bip_imp, normalized = TRUE)[token_nodes], 4),
+  Betweenness = round(betweenness(bip_imp, normalized = TRUE)[token_nodes], 4),
+  stringsAsFactors = FALSE
+)
+tok_centrality_bip_df <- tok_centrality_bip_df[order(-tok_centrality_bip_df$Degree), ]
+
+kable(tok_centrality_bip_df,
+      caption   = "Table 8.2 – Token Node Centrality in Bipartite Network",
+      row.names = FALSE,
+      col.names = c("Token", "Degree (docs containing token)",
+                    "Closeness (norm.)", "Betweenness (norm.)")) |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE) |>
+  row_spec(0, bold = TRUE) |>
+  column_spec(2, bold = TRUE)
+
+# Which documents share the most tokens
+# Project bipartite graph onto document side
+bip_proj <- bipartite_projection(bip_imp, which = "true")
+
+doc_shared <- as_data_frame(bip_proj, what = "edges")
+doc_shared <- doc_shared[order(-doc_shared$weight), ]
+
+kable(head(doc_shared, 10),
+      caption   = "Table 8.3 – Top 10 Document Pairs by Shared Tokens (Bipartite Projection)",
+      row.names = FALSE,
+      col.names = c("Document A", "Document B", "Shared Tokens")) |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE) |>
+  row_spec(0, bold = TRUE)
+
+# Which tokens appear in the most documents
+token_doc_count <- data.frame(
+  Token    = token_nodes,
+  NumDocs  = degree(bip_imp)[token_nodes],
+  stringsAsFactors = FALSE
+)
+token_doc_count <- token_doc_count[order(-token_doc_count$NumDocs), ]
+
+kable(token_doc_count,
+      caption   = "Table 8.4 – Tokens by Number of Documents (Degree in Bipartite Network)",
+      row.names = FALSE,
+      col.names = c("Token", "Number of Documents")) |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE) |>
+  row_spec(0, bold = TRUE)
+```
