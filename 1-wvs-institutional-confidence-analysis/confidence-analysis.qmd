@@ -1,0 +1,1673 @@
+---
+title: "33986010 A1 FIT3152"
+format: pdf
+editor: visual
+---
+
+# Libraries
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(corrplot)
+library(MASS)
+library(knitr)
+library(stringr)
+library(purrr)
+```
+
+# Dataset
+```{r}
+set.seed(33986010) # Your Student Number
+VCData = read.csv("WVSExtract.csv")
+VC = VCData[sample(1:nrow(VCData),100000, replace=FALSE),]
+VC = VC[,c(1:3,sort(sample(4:50,25,replace=FALSE)),
+sort(sample(51:65,8,replace=FALSE)))]
+#write.csv(VC, "FIT3152A1Data_NgLiXian.csv", row.names = FALSE)
+```
+
+# Appendix 1
+# Q1a
+```{r}
+overview <- data.frame(
+  Metric = c("Rows", "Columns", "Missing (%)", "Numeric Vars", "Character Vars"),
+  Value = c(
+    nrow(VC),
+    ncol(VC),
+    round(mean(is.na(VC)) * 100, 2),
+    sum(sapply(VC, is.numeric)),
+    sum(sapply(VC, is.character))
+  )
+)
+
+knitr::kable(overview)
+```
+
+```{r}
+# TABLE: DATA TYPES
+data_dict <- data.frame(
+  Variable = names(VC),
+  Type = sapply(VC, class),
+  Example = sapply(VC, function(x) head(x, 1))
+)
+
+knitr::kable(data_dict)
+write.csv(data_dict, "q1a_data_types.csv", row.names = FALSE)
+```
+
+```{r}
+# IDENTIFIER VARIABLES
+identifier_vars <- c("Wave", "Country", "Year")
+
+# OUTCOME VARIABLES 
+outcome_vars <- setdiff(grep("^C", names(VC), value = TRUE), "Country")
+
+# PREDICTOR VARIABLES 
+predictor_vars <- setdiff(names(VC), c(identifier_vars, outcome_vars))
+# Numeric predictor variables 
+predictor_num_vars <- predictor_vars[
+  sapply(VC[predictor_vars], is.numeric) &
+  !(predictor_vars %in% c("Country", "Year", "Wave"))
+]
+num_cols <- names(VC)[sapply(VC, is.numeric)]
+
+```
+
+```{r}
+# FIGURE: COUNT OF ZEROS PER NUMERICAL VARIABLE
+zero_count <- sapply(VC[num_cols], function(x) sum(x == 0, na.rm = TRUE))
+
+# Create plotting table
+zero_df <- data.frame(
+  Variable = names(zero_count),
+  Zero_Count = as.numeric(zero_count),
+  Type = ifelse(names(zero_count) %in% outcome_vars,
+                "Confidence (Outcome)",
+                "Predictor")
+)
+
+p_zero <- ggplot(zero_df,
+                 aes(x = reorder(Variable, Zero_Count),
+                     y = Zero_Count,
+                     fill = Type)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_manual(values = c(
+    "Confidence (Outcome)" = "#E74C3C",
+    "Predictor" = "#3498DB"
+  )) +
+  labs(title = "Zero Value Count per Variable",
+       x = "Variable",
+       y = "Count of Zero",
+       fill = "Variable Type") +
+  theme_minimal(base_size = 11) +
+  theme(
+    legend.position = "bottom",
+    axis.text.y = element_text(size = 8)
+  )
+
+print(p_zero)
+```
+
+```{r}
+# numeric_cols <- sapply(VC, is.numeric)
+# num_cols <- names(VC)[numeric_cols]
+
+# NEGATIVE -> NA 
+VC[num_cols] <- lapply(VC[num_cols], function(x) replace(x, x < 0, NA))
+
+# INVALID 0s -> NA 
+valid_zero <- c(
+  grep("^ACT", names(VC), value = TRUE),
+  grep("^ICQ", names(VC), value = TRUE)
+)
+zero_invalid_vars <- setdiff(num_cols, valid_zero)
+VC[zero_invalid_vars] <- lapply(VC[zero_invalid_vars], function(x) {
+  x[x == 0] <- NA
+  x
+})
+```
+
+```{r}
+# FIGURE: MISSING VALUE COUNT PER VARIABLE
+# Missing count
+missing_count <- colSums(is.na(VC[, num_cols, drop = FALSE]))
+
+# Create plotting table
+missing_df <- data.frame(
+  Variable = names(missing_count),
+  Missing_Count = as.numeric(missing_count),
+  Type = ifelse(names(missing_count) %in% outcome_vars,
+                "Confidence (Outcome)",
+                "Predictor")
+)
+
+top5_missing <- missing_df %>%
+  arrange(desc(Missing_Count)) %>%
+  slice(1:5)
+
+p_missing <- ggplot(missing_df,
+                    aes(x = reorder(Variable, Missing_Count),
+                        y = Missing_Count,
+                        fill = Type)) +
+  geom_col() +
+  geom_text(
+    data = top5_missing,
+    aes(label = Missing_Count),
+    hjust = -0.1,
+    size = 3
+  ) +
+  coord_flip() +
+  scale_fill_manual(values = c(
+    "Confidence (Outcome)" = "#E74C3C",
+    "Predictor" = "#3498DB"
+  )) +
+  labs(
+    title = "Missing Value Count per Variable",
+    x = "Variable",
+    y = "Missing Count",
+    fill = "Variable Type"
+  ) +
+  theme_minimal(base_size = 11) +
+  expand_limits(y = max(missing_df$Missing_Count) * 1.15) +
+  theme(
+    legend.position = "bottom",
+    axis.text.y = element_text(size = 8)
+  )
+
+print(p_missing)
+```
+```{r}
+# TABLE: ALL NUMERICAL VARIABLES
+summary_table <- data.frame(
+  Variable = num_cols,
+  Min = sapply(VC[num_cols], function(x) min(x, na.rm = TRUE)),
+  Q1 = sapply(VC[num_cols], function(x) quantile(x, 0.25, na.rm = TRUE)),
+  Median = sapply(VC[num_cols], function(x) median(x, na.rm = TRUE)),
+  Mean = sapply(VC[num_cols], function(x) mean(x, na.rm = TRUE)),
+  Q3 = sapply(VC[num_cols], function(x) quantile(x, 0.75, na.rm = TRUE)),
+  Max = sapply(VC[num_cols], function(x) max(x, na.rm = TRUE)),
+  SD = sapply(VC[num_cols], function(x) sd(x, na.rm = TRUE)),
+  MissingPct = sapply(VC[num_cols], function(x) mean(is.na(x)) * 100)
+)
+
+summary_table[, -1] <- round(summary_table[, -1], 2)
+knitr::kable(summary_table, caption = "Summary of numerical variables")
+```
+
+```{r}
+# BOX PLOT: ALL NUMERICAL PREDICTORS
+numeric_vars <- predictor_num_vars   
+
+VC %>%
+  dplyr::select(all_of(numeric_vars)) %>%
+  tidyr::pivot_longer(
+    cols = everything(),
+    names_to = "Variable",
+    values_to = "Value"
+  ) %>%
+  dplyr::filter(!is.na(Value)) %>%
+  ggplot(aes(x = Variable, y = Value)) +
+  geom_boxplot(fill = "steelblue", alpha = 0.7, outlier.alpha = 0.2) +
+  coord_flip() +
+  labs(
+    title = "Boxplot of All Numerical Predictors",
+    x = NULL,
+    y = "Value"
+  ) +
+  theme_minimal()
+```
+```{r}
+IL_vars <- grep("^IL", names(VC), value = TRUE)
+ICQ_vars <- grep("^ICQ", names(VC), value = TRUE)
+Pol_vars <- grep("^Pol", names(VC), value = TRUE)
+ACT_vars <- grep("^ACT", names(VC), value = TRUE)
+extra_vars <- c("LifeSatis", "FutureTech", "FutureRespect", 
+                "PrivateState", "HardWork")
+```
+
+```{r}
+# NUMBER OF UNIQUE COUNTRY
+length(unique(VC$Country))
+```
+```{r}
+# COUNTRY SAMPLE IMBALANCE
+library(patchwork)
+
+country_counts <- VC %>%
+  count(Country, sort = TRUE)
+
+top10 <- country_counts %>% slice_head(n = 10)
+bottom10 <- country_counts %>% slice_tail(n = 10)
+
+p1 <- ggplot(top10, aes(x = reorder(Country, n), y = n)) +
+  geom_col(fill = "purple") +
+  coord_flip() +
+  labs(
+    title = "Top 10 Countries",
+    x = "Country",
+    y = "Count"
+  ) +
+  theme_minimal()
+
+p2 <- ggplot(bottom10, aes(x = reorder(Country, n), y = n)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Bottom 10 Countries",
+    x = "Country",
+    y = "Count"
+  ) +
+  theme_minimal()
+
+p1 + p2
+```
+
+```{r}
+# BOX PLOT: DISTRIBUTION OF COUNTRY SAMPLE SIZE
+country_counts %>%
+  ggplot(aes(x = "", y = n)) +
+  geom_boxplot(
+    fill = "#6A5ACD",
+    color = "black",
+    width = 0.3,
+    outlier.color = "red",
+    outlier.size = 2
+  ) +
+  labs(
+    title = "Distribution of Country Sample Sizes",
+    subtitle = "Number of survey responses per country",
+    y = "Responses per Country",
+    x = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  )
+```
+# Appendix 2
+# Q2a
+```{r}
+focus_country <- "KOR"
+
+# FOCUS COUNTRY & OTHER SUBSETS
+VC_focus <- VC %>% filter(Country == focus_country)
+VC_other <- VC %>% filter(Country != focus_country)
+
+cat("Korea nrow:", nrow(VC_focus), "\n")
+cat("Other Countries nrow:", nrow(VC_other))
+```
+```{r}
+# CORRELATION MATRIX
+cor_mat <- cor(
+  VC %>%
+    dplyr::select(all_of(predictor_num_vars)),
+  use = "pairwise.complete.obs"
+)
+
+# TABLE: HIGHLY CORRELATED PAIRS
+high_corr_pairs <- which(
+  abs(cor_mat) >= 0.7 & abs(cor_mat) < 1,
+  arr.ind = TRUE
+)
+
+high_corr_table <- data.frame(
+  Var1 = rownames(cor_mat)[high_corr_pairs[,1]],
+  Var2 = colnames(cor_mat)[high_corr_pairs[,2]],
+  Correlation = cor_mat[high_corr_pairs]
+) %>%
+  distinct()
+
+knitr::kable(high_corr_table)
+```
+
+```{r}
+predictor_q2a <- predictor_num_vars
+```
+
+```{r}
+# TABLE: WELCH T-TESTS
+q2a_results <- map_dfr(predictor_q2a, function(var){
+
+  x <- VC_focus[[var]]
+  y <- VC_other[[var]]
+
+  test <- t.test(x, y, var.equal = FALSE)
+
+  tibble(
+    Variable = var,
+    Focus_Mean = mean(x, na.rm = TRUE),
+    Focus_SD = sd(x, na.rm = TRUE),
+    Other_Mean = mean(y, na.rm = TRUE),
+    Other_SD = sd(y, na.rm = TRUE),
+    Mean_Diff = mean(x, na.rm = TRUE) - mean(y, na.rm = TRUE),
+    P_Value = test$p.value
+  )
+}) %>%
+  arrange(desc(abs(Mean_Diff)))
+
+knitr::kable(q2a_results, digits = 3)
+write.csv(q2a_results, "q2a_welch_ttest_results.csv", row.names = FALSE)
+```
+
+```{r}
+# TOP 10 DIFFERENCES (DUMBBELL PLOT)
+top10_diff <- q2a_results %>%
+  slice_max(abs(Mean_Diff), n = 10)
+
+ggplot(top10_diff,
+       aes(y = reorder(Variable, Mean_Diff))) +
+  
+  geom_segment(aes(
+    x = Other_Mean,
+    xend = Focus_Mean,
+    yend = Variable
+  ),
+  color = "grey70",
+  linewidth = 1.2) +
+  
+  geom_point(
+    aes(x = Other_Mean, colour = "Other Countries"),
+    size = 3
+  ) +
+  
+  geom_point(
+    aes(x = Focus_Mean, colour = "Focus Country"),
+    size = 3
+  ) +
+  
+  scale_colour_manual(
+    values = c(
+      "Other Countries" = "#3498DB",
+      "Focus Country" = "#E74C3C"
+    ),
+    name = "Group"
+  ) +
+  
+  labs(
+    title = paste("Top 10 Attribute Differences:", focus_country, "vs Other Countries"),
+    x = "Mean Response",
+    y = NULL
+  ) +
+  
+  theme_minimal()
+```
+
+```{r}
+# TABLE: Top significant mean differences (clean for report)
+
+q2a_summary <- q2a_results %>%
+  mutate(
+    Direction = ifelse(Mean_Diff > 0, "Focus Higher", "Focus Lower")
+  ) %>%
+  filter(P_Value < 0.05) %>%                     # keep only significant
+  arrange(desc(abs(Mean_Diff))) %>%              # largest differences first
+  slice_head(n = 10) %>%                         # top 10 only
+  mutate(
+    Mean_Diff = round(Mean_Diff, 3),
+    P_Value = ifelse(P_Value < 0.001, "<0.001", round(P_Value, 3))
+  ) %>%
+  dplyr::select(
+    Variable,
+    Mean_Diff,
+    P_Value,
+    Direction
+  )
+
+# Clean table for report
+knitr::kable(
+  q2a_summary,
+  caption = "Top 10 significant differences between Korea and other countries"
+)
+
+write.csv(q2a_summary, "q2a_top10_results.csv", row.names = FALSE)
+
+write.csv(q2a_results, "q2a_full_results.csv", row.names = FALSE)
+```
+
+```{r}
+# BOXPLOT: TOP DIFFERING VARIABLES
+var_groups <- list(
+  IL = IL_vars,
+  ICQ = ICQ_vars,
+  Political = Pol_vars,
+  ACT = ACT_vars,
+  Additional = extra_vars
+)
+
+# Build grouped scores for each respondent
+focus_grouped <- VC_focus %>%
+  dplyr::transmute(
+    Group = focus_country,
+    IL = rowMeans(dplyr::select(., all_of(IL_vars)), na.rm = TRUE),
+    ICQ = rowMeans(dplyr::select(., all_of(ICQ_vars)), na.rm = TRUE),
+    Political = rowMeans(dplyr::select(., all_of(Pol_vars)), na.rm = TRUE),
+    ACT = rowMeans(dplyr::select(., all_of(ACT_vars)), na.rm = TRUE),
+    Additional = rowMeans(dplyr::select(., all_of(extra_vars)), na.rm = TRUE)
+  )
+
+other_grouped <- VC_other %>%
+  dplyr::transmute(
+    Group = "Other Countries",
+    IL = rowMeans(dplyr::select(., all_of(IL_vars)), na.rm = TRUE),
+    ICQ = rowMeans(dplyr::select(., all_of(ICQ_vars)), na.rm = TRUE),
+    Political = rowMeans(dplyr::select(., all_of(Pol_vars)), na.rm = TRUE),
+    ACT = rowMeans(dplyr::select(., all_of(ACT_vars)), na.rm = TRUE),
+    Additional = rowMeans(dplyr::select(., all_of(extra_vars)), na.rm = TRUE)
+  )
+
+boxplot_group_data <- bind_rows(focus_grouped, other_grouped) %>%
+  tidyr::pivot_longer(
+    cols = -Group,
+    names_to = "VariableGroup",
+    values_to = "Value"
+  )
+
+ggplot(boxplot_group_data,
+       aes(x = Group, y = Value, fill = Group)) +
+  geom_boxplot(outlier.alpha = 0.2) +
+  facet_wrap(~ VariableGroup, scales = "free_y") +
+  labs(
+    title = paste("Distribution by Variable Group:", focus_country, "vs Other Countries"),
+    x = NULL,
+    y = "Average Response"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    strip.text = element_text(face = "bold")
+  )
+```
+
+# Q2b
+```{r}
+predictor_q2b <- predictor_q2a
+confidence_vars <- outcome_vars
+```
+
+```{r}
+# Run stepwise and forward models
+run_models_selection <- function(data, predictors, outcomes) {
+  
+  model_list <- lapply(outcomes, function(out) {
+    
+    # Keep only needed columns for this outcome
+    model_data <- data %>%
+      dplyr::select(all_of(c(out, predictors))) %>%
+      na.omit()
+    
+    # Standardise variables so coefficients are comparable
+    model_data <- model_data %>%
+      dplyr::mutate(across(everything(), ~ as.numeric(scale(.))))
+    
+    full_formula <- as.formula(
+      paste(out, "~", paste(predictors, collapse = " + "))
+    )
+    
+    null_formula <- as.formula(
+      paste(out, "~ 1")
+    )
+    
+    full_model <- lm(full_formula, data = model_data)
+    null_model <- lm(null_formula, data = model_data)
+    
+    step_model <- stepAIC(
+      full_model,
+      direction = "both",
+      trace = FALSE
+    )
+    
+    forward_model <- stepAIC(
+      null_model,
+      scope = list(lower = null_formula, upper = full_formula),
+      direction = "forward",
+      trace = FALSE
+    )
+    
+    list(
+      stepwise = step_model,
+      forward = forward_model,
+      n = nrow(model_data)
+    )
+  })
+  
+  names(model_list) <- outcomes
+  return(model_list)
+}
+
+# Model performance table
+get_model_perf <- function(model_list) {
+  
+  bind_rows(lapply(names(model_list), function(out) {
+    
+    step_sum <- summary(model_list[[out]]$stepwise)
+    fwd_sum  <- summary(model_list[[out]]$forward)
+    
+    step_p <- pf(
+      step_sum$fstatistic[1],
+      step_sum$fstatistic[2],
+      step_sum$fstatistic[3],
+      lower.tail = FALSE
+    )
+    
+    fwd_p <- pf(
+      fwd_sum$fstatistic[1],
+      fwd_sum$fstatistic[2],
+      fwd_sum$fstatistic[3],
+      lower.tail = FALSE
+    )
+    
+    tibble(
+      Outcome = out,
+      N = model_list[[out]]$n,
+      Stepwise_R2 = step_sum$r.squared,
+      Stepwise_Adj_R2 = step_sum$adj.r.squared,
+      Stepwise_Model_P = step_p,
+      Forward_R2 = fwd_sum$r.squared,
+      Forward_Adj_R2 = fwd_sum$adj.r.squared,
+      Forward_Model_P = fwd_p
+    )
+  })) %>%
+    dplyr::mutate(
+      Best_Method = ifelse(Stepwise_Adj_R2 >= Forward_Adj_R2, "Stepwise", "Forward"),
+      Best_R2 = pmax(Stepwise_R2, Forward_R2),
+      Best_Adj_R2 = pmax(Stepwise_Adj_R2, Forward_Adj_R2),
+      Best_Model_P = ifelse(Best_Method == "Stepwise", Stepwise_Model_P, Forward_Model_P)
+    ) %>%
+    dplyr::arrange(desc(Best_Adj_R2))
+}
+
+# Extract coefficients from best model
+get_coefficients_best <- function(model_list, group_name) {
+  
+  bind_rows(lapply(names(model_list), function(out) {
+    
+    step_sum <- summary(model_list[[out]]$stepwise)
+    fwd_sum  <- summary(model_list[[out]]$forward)
+    
+    best_model <- if (step_sum$adj.r.squared >= fwd_sum$adj.r.squared) {
+      model_list[[out]]$stepwise
+    } else {
+      model_list[[out]]$forward
+    }
+    
+    coef_df <- as.data.frame(summary(best_model)$coefficients)
+    coef_df$Variable <- rownames(coef_df)
+    coef_df$Outcome <- out
+    coef_df$Group <- group_name
+    coef_df$Significant <- coef_df$`Pr(>|t|)` < 0.05
+    coef_df$Abs_t <- abs(coef_df$`t value`)
+    coef_df$Abs_Beta <- abs(coef_df$Estimate)
+    rownames(coef_df) <- NULL
+    
+    coef_df
+  })) %>%
+    dplyr::filter(Variable != "(Intercept)")
+}
+
+# Run models
+models_focus <- run_models_selection(
+  data = VC_focus,
+  predictors = predictor_q2b,
+  outcomes = confidence_vars
+)
+```
+
+```{r}
+# Model performance summary
+model_perf_focus <- get_model_perf(models_focus)
+
+knitr::kable(
+  model_perf_focus,
+  digits = 4,
+  caption = "Model performance for confidence outcomes in the focus country"
+)
+write.csv(model_perf_focus, "q2b_model_perf_focus.csv", row.names = FALSE)
+```
+
+```{r}
+# Plot: which confidence outcome is most reliably predicted
+model_perf_focus %>%
+  ggplot(aes(x = reorder(Outcome, Best_Adj_R2),
+             y = Best_Adj_R2,
+             fill = Best_Method)) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = round(Best_Adj_R2, 3)),
+            hjust = -0.1, size = 3.5) +
+  coord_flip() +
+  scale_y_continuous(limits = c(0, max(model_perf_focus$Best_Adj_R2) + 0.05)) +
+  labs(
+    title = paste("Predictability of Confidence Outcomes:", focus_country),
+    subtitle = "Best model for each outcome ranked by Adjusted R²",
+    x = NULL,
+    y = "Adjusted R²",
+    fill = "Selected Model"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.text.y = element_text(size = 9)
+  )
+
+```
+
+```{r}
+# Extract coefficients from best model for each outcome
+coef_focus <- get_coefficients_best(models_focus, focus_country)
+```
+
+```{r}
+# Best predictor for each confidence outcome
+# rank by absolute t-value
+best_predictors_focus <- coef_focus %>%
+  dplyr::filter(Significant) %>%
+  dplyr::group_by(Outcome) %>%
+  dplyr::slice_max(order_by = Abs_t, n = 1, with_ties = FALSE) %>%
+  dplyr::ungroup()
+
+knitr::kable(
+  best_predictors_focus,
+  digits = 4,
+  caption = "Strongest predictor of each confidence outcome in the focus country"
+)
+write.csv(best_predictors_focus, "q2b_best_predict_focus.csv", row.names = FALSE)
+```
+
+```{r}
+best_predictors_plot <- best_predictors_focus %>%
+  mutate(
+    Outcome_label = stringr::str_wrap(Outcome, width = 12),
+    Predictor_label = stringr::str_wrap(Variable, width = 14),
+    Direction = ifelse(Estimate > 0, "Positive", "Negative")
+  )
+
+ggplot(best_predictors_plot,
+       aes(x = reorder(Outcome_label, Abs_t),
+           y = Abs_t,
+           fill = Direction)) +
+  geom_col(width = 0.7) +
+  coord_flip(clip = "off") +
+  geom_text(
+    aes(label = Predictor_label),
+    hjust = -0.1,
+    size = 3.5
+  ) +
+  scale_fill_manual(
+    values = c("Positive" = "#2471A3", "Negative" = "#C0392B")
+  ) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0, 0.18))
+  ) +
+  labs(
+    title = "Strongest Predictor for Each Confidence Outcome in Korea",
+    x = "Confidence Outcome",
+    y = "|t-value|",
+    fill = "Effect Direction"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    legend.position = "bottom",
+    plot.margin = margin(5.5, 40, 5.5, 5.5),
+    axis.text.y = element_text(size = 10)
+  )
+```
+
+
+```{r}
+# 13. Heatmap of standardised predictors
+heatmap_focus <- coef_focus %>%
+  dplyr::select(Outcome, Variable, Estimate, Significant) %>%
+  tidyr::complete(Outcome, Variable, fill = list(Estimate = 0, Significant = FALSE))
+
+ggplot(heatmap_focus, aes(x = Outcome, y = Variable, fill = Estimate, alpha = Significant)) +
+  geom_tile(color = "white", linewidth = 0.3) +
+  scale_fill_gradient2(
+    low = "#C0392B",
+    mid = "white",
+    high = "#2471A3",
+    midpoint = 0
+  ) +
+  scale_alpha_manual(values = c("TRUE" = 1, "FALSE" = 0.25), guide = "none") +
+  labs(
+    title = paste("Standardised Predictors of Confidence:", focus_country),
+    subtitle = "Darker tiles indicate statistically significant effects",
+    x = "Confidence Outcome",
+    y = "Predictor",
+    fill = "Beta"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    axis.text.y = element_text(size = 9),
+    panel.grid = element_blank()
+  )
+
+```
+
+```{r}
+# Assumption checks for the most reliably predicted outcome
+best_outcome <- model_perf_focus %>%
+  dplyr::slice_max(order_by = Best_Adj_R2, n = 1) %>%
+  dplyr::pull(Outcome)
+
+step_sum_best <- summary(models_focus[[best_outcome]]$stepwise)
+fwd_sum_best  <- summary(models_focus[[best_outcome]]$forward)
+
+best_model <- if (step_sum_best$adj.r.squared >= fwd_sum_best$adj.r.squared) {
+  models_focus[[best_outcome]]$stepwise
+} else {
+  models_focus[[best_outcome]]$forward
+}
+
+cat("Most reliably predicted confidence outcome:", best_outcome, "\n")
+cat("Selected model:",
+    ifelse(step_sum_best$adj.r.squared >= fwd_sum_best$adj.r.squared,
+           "Stepwise", "Forward"),
+    "\n")
+
+# Save diagnostics to file instead of tiny plotting pane
+png("Q2b_assumption_checks.png", width = 1200, height = 1000, res = 120)
+par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
+plot(best_model)
+dev.off()
+```
+
+# Q2c
+
+```{r}
+# TABLE: MODEL PERFORMANCE FOR OTHER COUNTRIES
+models_other <- run_models_selection(
+  data = VC_other,
+  predictors = predictor_q2b,
+  outcomes = confidence_vars
+)
+
+model_perf_other <- get_model_perf(models_other)
+
+knitr::kable(
+  model_perf_other,
+  digits = 4,
+  caption = "Model performance for confidence outcomes in other countries"
+)
+write.csv(model_perf_other, "q2c_model_perf.csv", row.names = FALSE)
+```
+
+```{r}
+# PLOT: PREDICTABILITY OF OTHER COUNTRIES
+model_perf_other %>%
+  ggplot(aes(x = reorder(Outcome, Best_Adj_R2),
+             y = Best_Adj_R2,
+             fill = Best_Method)) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = round(Best_Adj_R2, 3)),
+            hjust = -0.1, size = 3.5) +
+  coord_flip() +
+  scale_y_continuous(
+    limits = c(0, max(model_perf_other$Best_Adj_R2) + 0.05)
+  ) +
+  labs(
+    title = "Predictability of Confidence Outcomes: Other Countries",
+    subtitle = "Best model for each outcome ranked by Adjusted R²",
+    x = NULL,
+    y = "Adjusted R²",
+    fill = "Selected Model"
+  ) +
+  theme_minimal()
+```
+```{r}
+# Extract coefficients
+coef_other <- get_coefficients_best(models_other, "Other Countries")
+
+knitr::kable(
+  coef_other,
+  digits = 4,
+  caption = "Standardised coefficients from best models for other countries"
+)
+```
+
+```{r}
+# BEST PREDICTORS FOR OTHER COUNTRIES
+best_predictors_other <- coef_other %>%
+  dplyr::filter(Significant) %>%
+  dplyr::group_by(Outcome) %>%
+  dplyr::slice_max(order_by = Abs_t, n = 1, with_ties = FALSE) %>%
+  dplyr::ungroup()
+
+knitr::kable(
+  best_predictors_other,
+  digits = 4,
+  caption = "Strongest predictor of each confidence outcome in other countries"
+)
+write.csv(best_predictors_other, "q2c_strongest_predictor.csv", row.names = FALSE)
+```
+
+```{r}
+# HEATMAP FOR OTHER COUNTRIES
+heatmap_other <- coef_other %>%
+  dplyr::select(Outcome, Variable, Estimate, Significant) %>%
+  tidyr::complete(
+    Outcome,
+    Variable,
+    fill = list(Estimate = 0, Significant = FALSE)
+  )
+
+ggplot(heatmap_other,
+       aes(x = Outcome, y = Variable,
+           fill = Estimate, alpha = Significant)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(
+    low = "#C0392B",
+    mid = "white",
+    high = "#2471A3",
+    midpoint = 0
+  ) +
+  scale_alpha_manual(
+    values = c("TRUE" = 1, "FALSE" = 0.25),
+    guide = "none"
+  ) +
+  labs(
+    title = "Standardised Predictors of Confidence: Other Countries",
+    subtitle = "Darker tiles indicate statistically significant effects",
+    x = "Confidence Outcome",
+    y = "Predictor",
+    fill = "Beta"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+compare_perf <- bind_rows(
+  model_perf_focus %>% mutate(Group = focus_country),
+  model_perf_other %>% mutate(Group = "Other Countries")
+)
+
+ggplot(compare_perf,
+       aes(x = Outcome, y = Best_Adj_R2, fill = Group)) +
+  geom_col(position = "dodge") +
+  
+  coord_flip() +
+  labs(
+    title = "Comparison of Predictive Performance",
+    subtitle = paste(focus_country, "vs Other Countries"),
+    x = NULL,
+    y = "Adjusted R²"
+  ) +
+  theme_minimal()
+
+
+```
+
+
+```{r}
+# BEST PREDICTORS
+compare_predictors <- best_predictors_focus %>%
+  dplyr::select(Outcome, Focus_Predictor = Variable) %>%
+  left_join(
+    best_predictors_other %>%
+      dplyr::select(Outcome, Other_Predictor = Variable),
+    by = "Outcome"
+  )
+
+knitr::kable(
+  compare_predictors,
+  caption = "Comparison of strongest predictors: Focus Country vs Other Countries"
+)
+write.csv(compare_predictors, "q2c_strongest_focus_others.csv", row.names = FALSE)
+```
+
+# Appendix 3
+
+# Q3a
+
+```{r}
+time_var <- "Wave"
+
+VC_focus <- VC_focus %>%
+  mutate(Wave = as.numeric(as.character(Wave)))
+
+VC_other <- VC_other %>%
+  mutate(Wave = as.numeric(as.character(Wave)))
+
+# Create combined dataset 
+combined <- dplyr::bind_rows(
+  VC_focus %>% dplyr::mutate(Group = focus_country),
+  VC_other %>% dplyr::mutate(Group = "Others")
+)
+
+# Correlation with Time (Wave) (Selection rule: |r| >= 0.05)
+all_vars <- intersect(names(VC_focus), names(VC_other))
+all_vars <- setdiff(all_vars, c("Country", "Wave", "Year"))
+
+all_vars <- all_vars[
+  sapply(VC_focus[, all_vars, drop = FALSE], is.numeric) &
+  sapply(VC_other[, all_vars, drop = FALSE], is.numeric)
+]
+
+all_vars <- as.character(all_vars)
+
+compute_time_cor <- function(data, vars, time_col) {
+  sapply(vars, function(v) {
+    if (!(v %in% names(data))) return(NA_real_)
+    if (!(time_col %in% names(data))) return(NA_real_)
+    
+    d <- data[!is.na(data[[v]]) & !is.na(data[[time_col]]), , drop = FALSE]
+    
+    if (nrow(d) < 10) return(NA_real_)
+    if (!is.numeric(d[[v]]) || !is.numeric(d[[time_col]])) return(NA_real_)
+    
+    cor(d[[time_col]], d[[v]], method = "pearson")
+  })
+}
+
+focus_time_cor  <- compute_time_cor(VC_focus, all_vars, time_var)
+others_time_cor <- compute_time_cor(VC_other, all_vars, time_var)
+
+time_cor_df <- data.frame(
+  Variable      = all_vars,
+  Focus_r       = round(focus_time_cor, 3),
+  Others_r      = round(others_time_cor, 3),
+  Focus_select  = abs(focus_time_cor) >= 0.05,
+  Others_select = abs(others_time_cor) >= 0.05
+)
+
+cat("\n=== Correlation screening with Wave ===\n")
+print(time_cor_df, row.names = FALSE)
+
+selected_vars <- time_cor_df$Variable[
+  time_cor_df$Focus_select | time_cor_df$Others_select
+]
+
+cat("\nVariables selected for further analysis:\n")
+cat(paste(selected_vars, collapse = ", "), "\n")
+
+
+# Optional neat table
+knitr::kable(
+  time_cor_df,
+  digits = 3,
+  caption = "Screening variables by Pearson correlation with Wave"
+)
+
+write.csv(time_cor_df, "q3a_pearson_correlation_wave.csv", row.names = FALSE)
+
+```
+
+```{r}
+# Lollipop chart (Focus vs Others)
+cor_long <- time_cor_df %>%
+  dplyr::select(Variable, Focus_r, Others_r) %>%
+  tidyr::pivot_longer(
+    cols = c(Focus_r, Others_r),
+    names_to = "Group",
+    values_to = "Correlation"
+  ) %>%
+  dplyr::mutate(
+    Group = ifelse(Group == "Focus_r", focus_country, "Others")
+  )
+
+p_lollipop <- ggplot(cor_long, aes(x = Correlation, y = Variable)) +
+  
+  # reference lines
+  geom_vline(
+    xintercept = c(-0.05, 0.05),
+    linetype = "dashed",
+    colour = "grey50",
+    linewidth = 0.5
+  ) +
+  geom_vline(
+    xintercept = 0,
+    colour = "black",
+    linewidth = 0.4
+  ) +
+  
+  # connecting line (focus vs others)
+  geom_line(
+    aes(group = Variable),
+    colour = "grey70",
+    linewidth = 0.7
+  ) +
+  
+  # points
+  geom_point(
+    aes(colour = Group),
+    size = 3
+  ) +
+  
+  theme_minimal(base_size = 12) +
+  labs(
+    title = paste("Correlation with Wave:", focus_country, "vs Others"),
+    x = "Pearson Correlation with Wave",
+    y = NULL,
+    colour = "Group"
+  ) +
+  scale_colour_manual(
+    values = setNames(
+      c("steelblue", "tomato"),
+      c("Others", focus_country)
+    )
+  )
+
+print(p_lollipop)
+```
+
+```{r}
+# VISUALISE MEAN RESPONSE OVER TIME
+selected_pred  <- intersect(selected_vars, predictor_vars)
+selected_conf  <- intersect(selected_vars, outcome_vars)
+
+# Top 6 predictors by strongest time correlation
+top6_predictors <- time_cor_df %>%
+  dplyr::filter(Variable %in% selected_pred) %>%
+  dplyr::mutate(abs_r = pmax(abs(Focus_r), abs(Others_r), na.rm = TRUE)) %>%
+  dplyr::arrange(desc(abs_r)) %>%
+  dplyr::slice_head(n = 6) %>%
+  dplyr::pull(Variable)
+
+plot_line_trends <- function(vars_to_plot, title_suffix) {
+  
+  if (length(vars_to_plot) == 0) return(NULL)
+  
+  plot_data <- combined %>%
+    dplyr::select(Group, Wave, all_of(vars_to_plot)) %>%
+    tidyr::pivot_longer(
+      -c(Group, Wave),
+      names_to = "Variable",
+      values_to = "Value"
+    ) %>%
+    dplyr::group_by(Group, Wave, Variable) %>%
+    dplyr::summarise(
+      Mean = mean(Value, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  ggplot(
+    plot_data,
+    aes(x = Wave, y = Mean, colour = Group, group = Group)
+  ) +
+    geom_line(linewidth = 1) +
+    geom_point(size = 2) +
+    facet_wrap(~Variable, scales = "free_y", ncol = 3) +
+    theme_minimal(base_size = 11) +
+    labs(
+      title = paste("Mean Response by Time:", title_suffix),
+      subtitle = paste(focus_country, "vs Others"),
+      x = "Wave",
+      y = "Mean Score",
+      colour = "Group"
+    ) +
+    scale_colour_manual(
+      values = setNames(
+        c("steelblue", "tomato"),
+        c("Others", focus_country)
+      )
+    )
+}
+
+# First plot = top 6 predictors only
+plot_line_trends(top6_predictors, "Top 6 Predictor Variables")
+
+# Second plot = all selected confidence variables
+plot_line_trends(selected_conf, "Confidence Variables")
+
+```
+
+```{r}
+# TEST CHANGE OVER TIME WITHIN EACH GROUP
+# If residual normality looks acceptable -> ANOVA
+# Else -> Kruskal-Wallis
+run_method1_test <- function(data, vars, group_name) {
+
+  results <- lapply(vars, function(v) {
+
+    d <- data %>%
+      dplyr::select(Wave, all_of(v)) %>%
+      filter(!is.na(Wave), !is.na(.data[[v]]))
+
+    # Must have enough observations and at least 2 waves
+    if (nrow(d) < 10 || n_distinct(d$Wave) < 2) {
+      return(data.frame(
+        Group = group_name,
+        Variable = v,
+        Test = NA,
+        Statistic = NA,
+        P_Value = NA,
+        Significant = NA
+      ))
+    }
+
+    d$WaveFactor <- factor(d$Wave)
+
+    # fit model for residual normality check
+    lm_fit <- try(lm(as.formula(paste(v, "~ WaveFactor")), data = d), silent = TRUE)
+
+    use_anova <- FALSE
+
+    if (!inherits(lm_fit, "try-error")) {
+      res <- residuals(lm_fit)
+
+      # Shapiro only when feasible
+      if (length(res) >= 3 && length(res) <= 5000) {
+        shp <- try(shapiro.test(res), silent = TRUE)
+
+        if (!inherits(shp, "try-error") && shp$p.value > 0.05) {
+          use_anova <- TRUE
+        }
+      }
+    }
+
+    if (use_anova) {
+      fit <- aov(as.formula(paste(v, "~ WaveFactor")), data = d)
+      tab <- summary(fit)[[1]]
+
+      data.frame(
+        Group = group_name,
+        Variable = v,
+        Test = "ANOVA",
+        Statistic = unname(tab$`F value`[1]),
+        P_Value = unname(tab$`Pr(>F)`[1]),
+        Significant = unname(tab$`Pr(>F)`[1]) < 0.05
+      )
+
+    } else {
+      kw <- kruskal.test(as.formula(paste(v, "~ WaveFactor")), data = d)
+
+      data.frame(
+        Group = group_name,
+        Variable = v,
+        Test = "Kruskal-Wallis",
+        Statistic = unname(kw$statistic),
+        P_Value = unname(kw$p.value),
+        Significant = unname(kw$p.value) < 0.05
+      )
+    }
+  })
+
+  bind_rows(results)
+}
+
+method1_focus <- run_method1_test(VC_focus, selected_vars, focus_country)
+method1_other <- run_method1_test(VC_other, selected_vars, "Others")
+
+method1_results <- bind_rows(method1_focus, method1_other) %>%
+  arrange(Group, P_Value)
+
+knitr::kable(
+  method1_results,
+  digits = 4,
+  caption = "Method 1: ANOVA or Kruskal-Wallis across waves"
+)
+
+write.csv(method1_results, "q3a_anova_kruskal.csv", row.names = FALSE)
+
+
+# Significant only
+method1_sig <- method1_results %>%
+  filter(Significant == TRUE) %>%
+  arrange(Group, P_Value)
+
+knitr::kable(
+  method1_sig,
+  digits = 4,
+  caption = "Significant attributes changing across waves"
+)
+
+write.csv(method1_sig, "q3a_significant_changing.csv", row.names = FALSE)
+
+```
+
+```{r}
+# SUMMARY
+get_direction_summary <- function(data, vars, group_name) {
+
+  out <- lapply(vars, function(v) {
+    d <- data %>%
+      dplyr::select(Wave, all_of(v)) %>%
+      filter(!is.na(Wave), !is.na(.data[[v]])) %>%
+      group_by(Wave) %>%
+      summarise(Mean = mean(.data[[v]], na.rm = TRUE), .groups = "drop") %>%
+      arrange(Wave)
+
+    if (nrow(d) < 2) {
+      return(data.frame(
+        Group = group_name,
+        Variable = v,
+        First_Wave_Mean = NA,
+        Last_Wave_Mean = NA,
+        Mean_Change = NA,
+        Direction = NA
+      ))
+    }
+
+    change <- d$Mean[nrow(d)] - d$Mean[1]
+
+    direction <- ifelse(
+      abs(change) < 0.05, "Stable",
+      ifelse(change > 0, "Increasing", "Decreasing")
+    )
+
+    data.frame(
+      Group = group_name,
+      Variable = v,
+      First_Wave_Mean = d$Mean[1],
+      Last_Wave_Mean = d$Mean[nrow(d)],
+      Mean_Change = change,
+      Direction = direction
+    )
+  })
+
+  bind_rows(out)
+}
+
+direction_focus <- get_direction_summary(VC_focus, selected_vars, focus_country)
+direction_other <- get_direction_summary(VC_other, selected_vars, "Others")
+direction_summary <- bind_rows(direction_focus, direction_other)
+
+```
+
+```{r}
+# INTERACTION REGRESSION:
+# Test whether trend over time differs between focus country and Others
+
+combined2 <- combined %>%
+  mutate(Group_dummy = ifelse(Group == focus_country, 1, 0))
+
+interaction_results <- combined2 %>%
+  dplyr::select(Wave, Group_dummy, all_of(selected_vars)) %>%
+  tidyr::pivot_longer(
+    cols = all_of(selected_vars),
+    names_to = "Variable",
+    values_to = "Value"
+  ) %>%
+  tidyr::drop_na() %>%
+  dplyr::group_by(Variable) %>%
+  dplyr::group_modify(~{
+    fit <- lm(Value ~ Wave + Group_dummy + Wave:Group_dummy, data = .x)
+    s <- summary(fit)
+
+    coef_tab <- as.data.frame(s$coefficients)
+    coef_tab$term <- rownames(coef_tab)
+    rownames(coef_tab) <- NULL
+
+    names(coef_tab) <- c("estimate", "std.error", "statistic", "p.value", "term")
+
+    coef_tab %>%
+      dplyr::filter(term == "Wave:Group_dummy") %>%
+      dplyr::transmute(
+        Interaction_Effect = estimate,
+        Interaction_P = p.value,
+        Interaction_Significant = ifelse(p.value < 0.05, "Yes", "No"),
+        Trend_Comparison = case_when(
+          p.value >= 0.05 ~ "No significant difference in trend",
+          estimate > 0 ~ paste(focus_country, "changes more positively over time"),
+          estimate < 0 ~ paste(focus_country, "changes more negatively over time")
+        )
+      )
+  }) %>%
+  dplyr::ungroup()
+
+knitr::kable(
+  interaction_results,
+  digits = 4,
+  caption = "Interaction regression: does the trend over time differ between groups?"
+)
+
+write.csv(interaction_results, "q3a_interaction_regression.csv", row.names = FALSE)
+
+```
+
+```{r}
+interaction_results_small <- interaction_results %>%
+  dplyr::filter(Interaction_Significant == "Yes") %>%
+  dplyr::arrange(desc(abs(Interaction_Effect))) %>%
+  dplyr::slice_head(n = 10)
+
+knitr::kable(
+  interaction_results_small,
+  digits = 3,
+  caption = "Top 10 significant interaction effects (Korea vs Others over time)"
+)
+write.csv(interaction_results_small, "q3a_top10_interaction_regression.csv", row.names = FALSE)
+```
+
+
+```{r}
+# FINAL SUMMARY
+q3a_summary <- method1_results %>%
+  left_join(direction_summary, by = c("Group", "Variable")) %>%
+  left_join(interaction_results, by = "Variable") %>%
+  arrange(Group, P_Value)
+
+knitr::kable(
+  q3a_summary,
+  digits = 4,
+  caption = "Q3(a) summary: within-group change and between-group trend comparison"
+)
+
+write.csv(q3a_summary, "q3a_summary.csv", row.names = FALSE)
+
+
+```
+
+
+
+
+```{r}
+change_plot_data <- q3a_summary %>%
+  filter(!is.na(Mean_Change)) %>%
+  mutate(Variable = reorder(Variable, Mean_Change))
+
+ggplot(change_plot_data,
+       aes(x = Mean_Change, y = Variable, fill = Significant)) +
+  geom_col() +
+  facet_wrap(~ Group, scales = "free_y") +
+  theme_minimal(base_size = 11) +
+  labs(
+    title = "Direction and Magnitude of Change",
+    x = "Mean Change (Last Wave - First Wave)",
+    y = NULL,
+    fill = "Significant"
+  )
+```
+
+```{r}
+# BOXPLOT BY WAVE: Top 4 most changing variables
+top4_vars <- direction_summary %>%
+  filter(Group == focus_country) %>%
+  mutate(abs_change = abs(Mean_Change)) %>%
+  arrange(desc(abs_change)) %>%
+  slice_head(n = 4) %>%
+  pull(Variable)
+
+box_data <- combined %>%
+  dplyr::select(Group, Wave, all_of(top4_vars)) %>%
+  tidyr::pivot_longer(
+    -c(Group, Wave),
+    names_to = "Variable",
+    values_to = "Value"
+  )
+
+p_box <- ggplot(box_data, aes(x = factor(Wave), y = Value, fill = Group)) +
+  geom_boxplot(outlier.size = 0.3, alpha = 0.7) +
+  facet_wrap(~Variable, scales = "free_y") +
+  theme_minimal(base_size = 11) +
+  labs(
+    title = "Distribution by Wave: Top 4 Changing Variables",
+    subtitle = paste(focus_country, "vs Others"),
+    x = "Wave",
+    y = "Score",
+    fill = "Group"
+  ) +
+  scale_fill_manual(
+    values = setNames(
+      c("steelblue", "tomato"),
+      c("Others", focus_country)
+    )
+  )
+
+print(p_box)
+```
+
+# Q3b
+```{r}
+# For each wave and each outcome:
+# fit outcome ~ all predictors
+# record adj R2
+# identify strongest predictor by largest absolute t value
+
+fit_models_by_wave <- function(data, predictors, outcomes, min_n = 30) {
+  
+  results_perf <- list()
+  results_coef <- list()
+  
+  waves <- sort(unique(data$Wave))
+  
+  for (w in waves) {
+    data_w <- data %>% dplyr::filter(Wave == w)
+    
+    for (outcome in outcomes) {
+      
+      needed_vars <- c(outcome, predictors)
+      needed_vars <- needed_vars[needed_vars %in% names(data_w)]
+      
+      d <- data_w %>%
+        dplyr::select(all_of(needed_vars)) %>%
+        tidyr::drop_na()
+      
+      if (nrow(d) < min_n) next
+      
+      formula_txt <- paste(outcome, "~", paste(predictors, collapse = " + "))
+      fit <- try(lm(as.formula(formula_txt), data = d), silent = TRUE)
+      
+      if (inherits(fit, "try-error")) next
+      
+      s <- summary(fit)
+      
+      # ----- model performance -----
+      fstat <- s$fstatistic
+      model_p <- if (!is.null(fstat)) {
+        pf(fstat[1], fstat[2], fstat[3], lower.tail = FALSE)
+      } else {
+        NA
+      }
+      
+      results_perf[[length(results_perf) + 1]] <- tibble(
+        Wave = w,
+        Outcome = outcome,
+        N = nrow(d),
+        R2 = s$r.squared,
+        Adj_R2 = s$adj.r.squared,
+        Model_P = model_p
+      )
+      
+      # ----- coefficient table -----
+      coef_tab <- as.data.frame(s$coefficients)
+      coef_tab$term <- rownames(coef_tab)
+      rownames(coef_tab) <- NULL
+      
+      names(coef_tab) <- c("estimate", "std.error", "statistic", "p.value", "term")
+      
+      coef_tab <- coef_tab %>%
+        dplyr::filter(term != "(Intercept)") %>%
+        dplyr::mutate(
+          Wave = w,
+          Outcome = outcome,
+          Abs_t = abs(statistic),
+          Significant = p.value < 0.05
+        )
+      
+      results_coef[[length(results_coef) + 1]] <- coef_tab
+    }
+  }
+  
+  list(
+    performance = bind_rows(results_perf),
+    coefficients = bind_rows(results_coef)
+  )
+}
+
+models_focus <- fit_models_by_wave(VC_focus, predictor_vars, outcome_vars, min_n = 30)
+models_other <- fit_models_by_wave(VC_other, predictor_vars, outcome_vars, min_n = 30)
+
+model_perf_focus <- models_focus$performance %>% mutate(Group = focus_country)
+model_perf_other <- models_other$performance %>% mutate(Group = "Other")
+
+coef_focus <- models_focus$coefficients %>% mutate(Group = focus_country)
+coef_other <- models_other$coefficients %>% mutate(Group = "Other")
+
+
+```
+
+```{r}
+# Predictive ability over time
+
+model_perf_all <- bind_rows(model_perf_focus, model_perf_other)
+
+kable(model_perf_all, digits = 4,
+      caption = "Model performance over time")
+
+# strongest outcomes by average adjusted R2
+top_outcomes <- model_perf_all %>%
+  group_by(Outcome) %>%
+  summarise(Mean_Adj_R2 = mean(Adj_R2, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(Mean_Adj_R2)) %>%
+  pull(Outcome)
+
+top_outcomes
+
+p_perf <- model_perf_all %>%
+  filter(Outcome %in% top_outcomes) %>%
+  ggplot(aes(x = Wave, y = Adj_R2, color = Group, group = Group)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~ Outcome, scales = "free_y") +
+  labs(
+    title = paste("Predictive ability over time -", focus_country, "vs Other Countries"),
+    x = "Wave",
+    y = "Adjusted R-squared"
+  ) +
+  theme_minimal()
+
+print(p_perf)
+
+```
+
+```{r}
+# Strongest predictor in each wave
+
+coef_all <- bind_rows(coef_focus, coef_other)
+
+best_predictor_by_wave <- coef_all %>%
+  group_by(Group, Wave, Outcome) %>%
+  slice_max(order_by = Abs_t, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  dplyr::select(Group, Wave, Outcome, term, estimate, statistic, p.value, Abs_t)
+
+kable(best_predictor_by_wave, digits = 4,
+      caption = "Strongest predictor by wave and outcome")
+
+write.csv(best_predictor_by_wave, "q3b_best_predictor.csv", row.names = FALSE)
+
+
+# choose strongest outcomes for predictor-comparison graph
+predictor_plot_data <- best_predictor_by_wave %>%
+  filter(Outcome %in% top_outcomes)
+
+p_best_pred <- ggplot(predictor_plot_data,
+                      aes(x = Wave, y = Abs_t, color = Group, group = Group)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~ Outcome, scales = "free_y") +
+  labs(
+    title = paste("Question 3(b): Strength of best predictor over time -", focus_country, "vs Other Countries"),
+    x = "Wave",
+    y = "|t| of strongest predictor"
+  ) +
+  theme_minimal()
+
+print(p_best_pred)
+
+# Which predictors appear most often as strongest?
+predictor_frequency <- best_predictor_by_wave %>%
+  count(Group, Outcome, term, sort = TRUE)
+
+kable(predictor_frequency, digits = 4,
+      caption = "Frequency of strongest predictors over time")
+
+write.csv(predictor_frequency, "q3b_frequency_strongest.csv", row.names = FALSE)
+
+
+# Summary Tables
+trend_test_results <- combined %>%
+  dplyr::select(Group, Wave, all_of(selected_vars)) %>%
+  tidyr::pivot_longer(
+    cols = all_of(selected_vars),
+    names_to = "Variable",
+    values_to = "Value"
+  ) %>%
+  tidyr::drop_na() %>%
+  group_by(Group, Variable) %>%
+  group_modify(~{
+    fit <- lm(Value ~ Wave, data = .x)
+    s <- summary(fit)
+    
+    coef_tab <- as.data.frame(s$coefficients)
+    coef_tab$term <- rownames(coef_tab)
+    rownames(coef_tab) <- NULL
+    
+    names(coef_tab) <- c("estimate", "std.error", "statistic", "p.value", "term")
+    
+    coef_tab %>%
+      dplyr::filter(term == "Wave") %>%
+      dplyr::transmute(
+        Slope = estimate,
+        Std_Error = std.error,
+        T_Value = statistic,
+        P_Value = p.value,
+        Significant = ifelse(p.value < 0.05, "Yes", "No")
+      )
+  }) %>%
+  ungroup()
+
+trend_summary_report <- trend_test_results %>%
+  mutate(
+    Direction = case_when(
+      Slope > 0 & Significant == "Yes" ~ "Increasing",
+      Slope < 0 & Significant == "Yes" ~ "Decreasing",
+      TRUE ~ "Stable / weak trend"
+    )
+  )
+
+kable(trend_summary_report, digits = 4,
+      caption = "Report-ready summary of time trends")
+
+write.csv(trend_summary_report, "q3b_summary_time_trend.csv", row.names = FALSE)
+
+
+predictive_summary_report <- model_perf_all %>%
+  group_by(Group, Outcome) %>%
+  summarise(
+    Mean_Adj_R2 = mean(Adj_R2, na.rm = TRUE),
+    Max_Adj_R2 = max(Adj_R2, na.rm = TRUE),
+    Min_Adj_R2 = min(Adj_R2, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(Group, desc(Mean_Adj_R2))
+
+kable(predictive_summary_report, digits = 4,
+      caption = "Report-ready summary of predictive ability over time")
+
+write.csv(predictive_summary_report, "q3b_summary_predictive.csv", row.names = FALSE)
+
+```
+
+```{r}
+# model_perf_focus and model_perf_other should already exist
+model_perf_all <- bind_rows(
+  model_perf_focus %>% mutate(Group = focus_country),
+  model_perf_other %>% mutate(Group = "Other")
+)
+
+# optional: keep only outcomes with enough data
+plot_perf_data <- model_perf_all %>%
+  filter(!is.na(Adj_R2))
+
+ggplot(plot_perf_data,
+       aes(x = Wave,
+           y = Adj_R2,
+           color = Outcome,
+           group = Outcome)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~ Group) +
+  labs(
+    title = "Adjusted R² Values for Each Confidence Variable over Wave",
+    x = "Wave",
+    y = expression(Adjusted~R^2),
+    color = "Confidence Variable"
+  ) +
+  theme_minimal()
+```
