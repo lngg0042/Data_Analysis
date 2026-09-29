@@ -4,8 +4,7 @@ Statistical analysis in R of **100,000 World Values Survey responses from 58 cou
 South Korea's confidence in institutions (parliament, courts, press, armed forces, civil service, unions)
 differs from the rest of the world, what predicts it, and how it has changed over time.
 
-<img width="875" height="540" alt="2a_dumbbell" src="https://github.com/user-attachments/assets/370e152b-3041-4aa9-b16a-07eab0ce86c4" />
-
+![2a_dumbbell](https://github.com/user-attachments/assets/370e152b-3041-4aa9-b16a-07eab0ce86c4)
 
 ## Key findings
 
@@ -26,7 +25,7 @@ differs from the rest of the world, what predicts it, and how it has changed ove
 
 | Step | What I did | Why |
 |---|---|---|
-| Cleaning | Recoded WVS non-response codes (−1 to −5) and invalid zeros to `NA` using per-variable rules (e.g. keeping `0` where it means "not a member") | Survey codes look numeric but aren't real answers |
+| Cleaning | Recoded WVS non-response codes (−1 to −5) and invalid zeros to `NA` using per-variable rules (e.g. keeping `0` where it means "not a member") | Survey codes look numeric but aren't |
 | Profiling | Missingness, distribution and outlier checks across 36 variables | Up to 26% missing in some variables, which shapes later model choices |
 | Group comparison | Welch's t-test + Cohen's d; correlation screen for multicollinearity | Unequal group sizes (2,339 vs 97,661) and variances |
 | Prediction | Stepwise / forward regression per institution; standardised coefficients compared across countries in a heatmap | Find the few predictors that matter out of ~30 |
@@ -36,9 +35,7 @@ differs from the rest of the world, what predicts it, and how it has changed ove
 
 | | |
 |---|---|
-| ![]<img width="875" height="540" alt="2c_heatmap_predictors" src="https://github.com/user-attachments/assets/05e44de3-219c-4e24-a072-96523d26ace3" />
- | ![]<img width="875" height="540" alt="3a_direction_magnitude" src="https://github.com/user-attachments/assets/ecb5f4f1-ef99-4c2d-95b4-49b79deccb56" />
- |
+| ![2c_heatmap_predictors](https://github.com/user-attachments/assets/05e44de3-219c-4e24-a072-96523d26ace3) | ![3a_direction_magnitude](https://github.com/user-attachments/assets/ecb5f4f1-ef99-4c2d-95b4-49b79deccb56) |
 | Standardised predictor effects by institution | Where Korea's trends diverge over time |
 
 ## Tech stack
@@ -59,3 +56,4 @@ World Values Survey (Waves 1–7), available after registration at
 ## Context
 
 Individual project for a university data analytics unit (Monash University, 2026).
+
