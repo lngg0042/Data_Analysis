@@ -1,0 +1,1096 @@
+---
+title: "FIT3152_A2"
+format: pdf
+---
+
+```{r}
+library(ROCR)
+library(rpart)          # Decision Tree
+library(rpart.plot)     # Tree visualisation
+library(e1071)          # Naive Bayes
+library(ipred)          # Bagging
+library(adabag)         # Boosting
+library(randomForest)   # Random Forest
+library(pROC)           # ROC / AUC
+library(caret)          # confusionMatrix, cross-validation
+library(nnet)           # Artificial Neural Network
+library(dplyr)          # Data wrangling
+library(ggplot2)        # Plotting
+library(knitr)          # kable() tables
+library(kableExtra)     # kable styling (striped rows, bold columns etc.)
+library(tidyr)          # pivot_longer for long-format plotting
+```
+
+```{r}
+# ============================================================
+# DATA CREATION
+# ============================================================
+rm(list = ls())
+set.seed(33986010) # Your Student ID is the random seed
+WD = read.csv("WVSBinaryExtract.csv")
+selected_cols = c(sample(3:49, 30),sample(50:63, 3))
+WD = WD[c(1:2, selected_cols)]
+WD = WD[sample(nrow(WD), 20000, replace = FALSE),]
+
+cat("Dimensions:", dim(WD), "\n")
+cat("Columns:", paste(names(WD), collapse = ", "), "\n")
+
+# Last 3 columns = binary class variables (sampled from cols 50-63)
+class_vars <- tail(names(WD), 3)
+cat("Class variables:", paste(class_vars, collapse = ", "), "\n")
+```
+
+```{r}
+# ============================================================
+# QUESTION 1 - Data Exploration
+# ============================================================
+cat("\n===== Q1: Data Exploration =====\n")
+
+# ----------------------------------------------------------
+# 1a. Class variable proportions
+# ----------------------------------------------------------
+prop_rows <- list()
+
+for (cv in class_vars) {
+  tbl  <- table(factor(WD[[cv]], levels = c(0, 1)))
+  prop <- prop.table(tbl)
+  
+  ratio <- if (min(prop) == 0) NA else max(prop) / min(prop)
+  
+  prop_rows[[cv]] <- data.frame(
+    Class_Variable = cv,
+    N_High         = as.integer(tbl["1"]),
+    N_Low          = as.integer(tbl["0"]),
+    Prop_High      = round(as.numeric(prop["1"]), 4),
+    Prop_Low       = round(as.numeric(prop["0"]), 4),
+    ImbalRatio     = round(ratio, 3)
+  )
+}
+
+prop_df <- do.call(rbind, prop_rows)
+rownames(prop_df) <- NULL
+
+kable(prop_df,
+      caption = "Table 1. Class variable proportions (High = 1, Low = 0)",
+      col.names = c("Class Variable", "Number of High", "Number of Low",
+                    "Proportions High", "Proportions Low", "Imbalance Ratio")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE)
+           
+
+# ----------------------------------------------------------
+# 1b. Predictor summary statistics (kable replacing summary())
+# ----------------------------------------------------------
+predictors <- WD[, 3:(ncol(WD) - 3)]
+pred_cols  <- names(predictors)
+
+stats_df <- data.frame(
+  Variable  = pred_cols,
+  Mean      = round(sapply(predictors, mean,   na.rm = TRUE), 3),
+  SD        = round(sapply(predictors, sd,     na.rm = TRUE), 3),
+  Min       = round(sapply(predictors, min,    na.rm = TRUE), 3),
+  Median    = round(sapply(predictors, median, na.rm = TRUE), 3),
+  Max       = round(sapply(predictors, max,    na.rm = TRUE), 3),
+  N_Missing = as.integer(colSums(is.na(predictors))),
+  N_Negative = as.integer(sapply(predictors,
+                                  function(x) sum(x < 0, na.rm = TRUE)))
+)
+rownames(stats_df) <- NULL
+
+kable(stats_df,
+      caption = paste("Table 2. Summary statistics of predictor attributes",
+                      "(N =", nrow(WD), "). N_Negative indicates WVS",
+                      "system-missing codes (-1 to -5) requiring removal."),
+      col.names = c("Variable", "Mean", "SD", "Min",
+                    "Median", "Max", "N Missing", "N Negative"),
+      row.names = FALSE) |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = TRUE) |>
+  column_spec(8, bold = TRUE,
+              color = ifelse(stats_df$N_Negative > 0, "red", "black"))
+
+
+# Histograms for all numeric predictors (4 per page)
+num_pred_names <- names(predictors)
+n_preds <- length(num_pred_names)
+par(mfrow=c(5,6), mar=c(2,2,2,1))
+for (nm in num_pred_names) {
+  hist(predictors[[nm]], main=nm, xlab="", col="lightblue",
+       breaks=15, cex.main=0.85)
+}
+par(mfrow=c(1,1))
+
+# Box plots for all numeric predictors
+par(mfrow=c(5,6), mar=c(2,2,2,1))
+for (nm in num_pred_names) {
+  boxplot(predictors[[nm]], main=nm, xlab="", col="lightblue",
+          cex.main=0.85, outline=TRUE)
+}
+par(mfrow=c(1,1))
+
+# ----------------------------------------------------------
+# 1c.  NA and Negative Value Summary
+# ----------------------------------------------------------
+# Count NAs (including negative-coded WVS values)
+WD_raw_check <- WD  # before pre-processing negatives are already in the data
+neg_na_counts <- sapply(WD[pred_cols], function(x) sum(x < 0 | is.na(x), na.rm = TRUE))
+pct_missing   <- round(neg_na_counts / nrow(WD) * 100, 2)
+ 
+missing_df <- data.frame(
+  Attribute      = names(neg_na_counts),
+  Missing_Count  = as.vector(neg_na_counts),
+  Missing_Pct    = as.vector(pct_missing)
+)
+missing_df <- missing_df[order(-missing_df$Missing_Pct), ]
+ 
+cat("\n--- Missing / Negative-Coded Values per Predictor ---\n")
+kable(missing_df,
+      caption = "Table 1. Missing and negative-coded values per predictor attribute",
+      row.names = FALSE,
+      format = "html") %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+    full_width = FALSE,
+    position = "center",
+    font_size = 14
+  ) %>%
+  row_spec(0, bold = TRUE, background = "#4472C4", color = "white") %>%
+  column_spec(1, bold = TRUE, width = "20em") %>%
+  scroll_box(width = "100%")
+ 
+# Bar chart of % missing
+par(mar = c(8, 4, 3, 1))
+barplot(missing_df$Missing_Pct,
+        names.arg = missing_df$Attribute,
+        las       = 2,
+        col       = ifelse(missing_df$Missing_Pct > 30, "tomato", "steelblue"),
+        ylab      = "% Missing / Negative-coded",
+        main      = "Figure. Percentage of missing values per predictor",
+        cex.names = 0.65)
+abline(h = 30, lty = 2, col = "red")
+legend("topright", legend = "30% threshold", lty = 2, col = "red")
+par(mar = c(5, 4, 4, 2))
+
+```
+
+```{r}
+# ============================================================
+# Q1: Country and Wave observation counts
+# ============================================================
+
+# --- Country counts ---
+country_counts <- sort(table(WD$Country), decreasing = TRUE)
+
+country_df <- data.frame(
+  Country    = names(country_counts),
+  N_Obs      = as.integer(country_counts),
+  Percentage = round(as.integer(country_counts) / nrow(WD) * 100, 2)
+)
+rownames(country_df) <- NULL
+
+kable(country_df,
+      caption = "Table 3. Number of observations per country",
+      col.names = c("Country", "N Observations", "% of Total")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE)
+
+# Bar chart - top 15 countries
+top15 <- head(country_df, 15)
+par(mar = c(6, 4, 3, 1))
+barplot(top15$N_Obs,
+        names.arg = top15$Country,
+        las       = 2,
+        col       = "steelblue",
+        ylab      = "Number of Observations",
+        main      = "Figure: Top 15 Countries by Observation Count",
+        cex.names = 0.8)
+par(mar = c(5, 4, 4, 2))
+
+
+# --- Wave counts ---
+wave_counts <- sort(table(WD$Wave), decreasing = TRUE)
+
+wave_df <- data.frame(
+  Wave       = names(wave_counts),
+  N_Obs      = as.integer(wave_counts),
+  Percentage = round(as.integer(wave_counts) / nrow(WD) * 100, 2)
+)
+rownames(wave_df) <- NULL
+
+kable(wave_df,
+      caption = "Table 4. Number of observations per survey wave",
+      col.names = c("Wave", "N Observations", "% of Total")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE)
+
+# Bar chart - wave distribution
+par(mar = c(4, 4, 3, 1))
+barplot(wave_df$N_Obs,
+        names.arg = paste("Wave", wave_df$Wave),
+        las       = 1,
+        col       = "steelblue",
+        ylab      = "Number of Observations",
+        main      = "Figure: Observations per Survey Wave",
+        cex.names = 0.85)
+par(mar = c(5, 4, 4, 2))
+
+
+# --- Combined country + wave heatmap ---
+# Shows which countries appear in which waves
+cw_table <- table(WD$Country, WD$Wave)
+cw_df    <- as.data.frame.matrix(cw_table)
+
+kable(cw_df,
+      caption = "Table 5. Observation counts by Country and Wave",
+      format  = "html") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = TRUE,
+                font_size  = 11) %>%
+  scroll_box(width = "100%", height = "400px")
+```
+
+```{r}
+
+# ============================================================
+# QUESTION 2 - Pre-processing
+# ============================================================
+cat("\n===== Q2: Pre-processing =====\n")
+
+WD_clean  <- WD
+pred_cols <- names(WD_clean)[3:(ncol(WD_clean) - 3)]
+
+# Replace WVS negative system-missing codes with NA
+for (col in pred_cols) {
+  if (is.numeric(WD_clean[[col]])) {
+    WD_clean[[col]][WD_clean[[col]] < 0] <- NA
+  }
+}
+
+# Remove rows where any class variable is NA
+WD_clean <- WD_clean[complete.cases(WD_clean[, class_vars]), ]
+
+# Impute remaining predictor NAs with column median
+for (col in pred_cols) {
+  if (is.numeric(WD_clean[[col]])) {
+    med <- median(WD_clean[[col]], na.rm = TRUE)
+    WD_clean[[col]][is.na(WD_clean[[col]])] <- med
+  }
+}
+
+# Convert class variables to factors (0 = Low, 1 = High)
+for (cv in class_vars) {
+  WD_clean[[cv]] <- factor(WD_clean[[cv]], levels = c(0, 1),
+                           labels = c("Low", "High"))
+  cat(sprintf("  %s -> factor levels: %s\n", cv,
+              paste(levels(WD[[cv]]), collapse = ", ")))
+}
+
+# Convert Country and Wave to factors (categorical identifiers)
+WD_clean$Country <- as.factor(WD_clean$Country)
+WD_clean$Wave    <- as.factor(WD_clean$Wave)
+
+# Scaling / Standardisation 
+cat("\n--- 2f. Scaling note ---\n")
+cat("  Scaling deferred to Q11 (ANN only).\n")
+cat("  Tree-based models and Naive Bayes are scale-invariant.\n")
+ 
+# Final Dataset Overview 
+cat("\n--- 2g. Final dataset dimensions after pre-processing ---\n")
+final_summary <- data.frame(
+  Item  = c("Total observations", "Predictor columns",
+            "Convert class variables to factors (High/Low)", "Remaining NAs"),
+  Value = c(nrow(WD_clean), length(pred_cols), paste(paste(class_vars, collapse = ", "), "converted"), sum(is.na(WD_clean)))
+)
+print(kable(final_summary,
+            caption = "Table 6. Dataset summary after pre-processing",
+            row.names = FALSE))
+ 
+```
+
+```{r}
+# ============================================================
+# QUESTION 3: Train/Test Split (70/30)
+# ============================================================
+cat("\n========== QUESTION 3: TRAIN/TEST SPLIT ==========\n")
+
+set.seed(33986010)
+train.row <- sample(1:nrow(WD_clean), 0.7 * nrow(WD_clean))
+WD.train  <- WD_clean[train.row, ]
+WD.test   <- WD_clean[-train.row, ]
+
+cat("Training set size:", nrow(WD.train), "\n")
+cat("Test set size:    ", nrow(WD.test),  "\n")
+
+# Define predictor columns (exclude Country, Wave, and all class vars)
+all_cols     <- names(WD)
+non_pred     <- c("Country", "Wave", class_vars)
+pred_cols    <- setdiff(all_cols, non_pred)
+cat("Predictor columns used:", length(pred_cols), "\n")
+
+# ============================================================
+# HELPER FUNCTIONS
+# ============================================================
+
+# Build formula: class_var ~ predictors
+make_formula <- function(cv, preds) {
+  as.formula(paste(cv, "~", paste(preds, collapse = " + ")))
+}
+
+# Compute metrics from confusion matrix
+get_metrics <- function(cm) {
+  # cm is a 2x2 table: rows=predicted, cols=actual; labels Low/High
+  # Positive class = "High"
+  tp <- cm["High", "High"]
+  tn <- cm["Low",  "Low"]
+  fp <- cm["High", "Low"]
+  fn <- cm["Low",  "High"]
+  acc  <- (tp + tn) / sum(cm)
+  prec <- ifelse((tp + fp) == 0, 0, tp / (tp + fp))
+  rec  <- ifelse((tp + fn) == 0, 0, tp / (tp + fn))
+  f1   <- ifelse((prec + rec) == 0, 0, 2 * prec * rec / (prec + rec))
+  c(Accuracy=round(acc,4), Precision=round(prec,4),
+    Recall=round(rec,4), F1=round(f1,4))
+}
+```
+
+```{r}
+# ============================================================
+# QUESTION 4: Fit Models on Training Data
+# ============================================================
+cat("\n========== QUESTION 4: MODEL FITTING ==========\n")
+
+model_names <- c("Decision Tree", "Naive Bayes", "Bagging",
+                 "Boosting", "Random Forest")
+
+prob_list <- list()
+
+for (cv in class_vars) {
+  cat("\n---------- Class Variable:", cv, "----------\n")
+  fml <- make_formula(cv, pred_cols)
+
+  # ---- 4a. Decision Tree with cross-validation pruning ----
+  cat("  Fitting Decision Tree...\n")
+  dt.model <- rpart(fml, data = WD.train, method = "class",
+                    control = rpart.control(xval = 10))   # 10-fold cross-validation
+  
+  # Prune using optimal CP from cross-validation
+  best_cp <- dt.model$cptable[which.min(dt.model$cptable[, "xerror"]), "CP"]
+  dt.model <- prune(dt.model, cp = best_cp)
+  
+  if (!is.null(dt.model$splits) && nrow(dt.model$splits) > 0) {
+    # extra = 106: shows predicted class + % of observations in node + n
+    # type  = 0:   simple lines like plain plot(), no boxes
+    rpart.plot(dt.model,
+           type        = 0,
+           extra       = 106,
+           under       = TRUE,
+           cex         = 0.75,
+           digits      = 2,
+           roundint    = FALSE,    # stops rounding to nearest integer
+           main        = paste("Figure: Decision Tree -", cv),
+           box.palette = "auto",
+           shadow.col  = "gray")
+  } else {
+    cat("  Note: single-node tree for", cv,
+        "- no splits produced (class imbalance). Only CGovernment is plotted.\n")
+  }
+
+  # ---- 4b. Naive Bayes ----
+  cat("  Fitting Naive Bayes...\n")
+  nb.model <- naiveBayes(fml, data = WD.train)
+  # Print number of predictor conditional tables as evidence of fitting
+  cat("  Naive Bayes fitted with", length(nb.model$tables), "predictor distributions.\n")
+ 
+  # ---- 4c. Bagging ----
+  cat("  Fitting Bagging...\n")
+  bag.model <- adabag::bagging(fml, data = WD.train, mfinal = 25)
+  cat("  Bagging fitted with", bag.model$terms |> length(), "terms,",
+      length(bag.model$trees), "trees.\n")
+ 
+  # ---- 4d. Boosting ----
+  cat("  Fitting Boosting...\n")
+  bst.model <- adabag::boosting(fml, data = WD.train, mfinal = 25)
+  cat("  Boosting fitted with", length(bst.model$trees), "trees.\n")
+ 
+  # ---- 4e. Random Forest ----
+  cat("  Fitting Random Forest...\n")
+  rf.model <- randomForest(fml, data = WD.train, ntree = 100, importance = TRUE)
+  print(rf.model)   # prints OOB error, class error table — useful evidence
+  
+  # Store models
+  assign(paste0("dt_",  cv), dt.model)
+  assign(paste0("nb_",  cv), nb.model)
+  assign(paste0("bag_", cv), bag.model)
+  assign(paste0("bst_", cv), bst.model)
+  assign(paste0("rf_",  cv), rf.model)
+
+  # Store predicted probabilities for Q6
+  bag.raw <- adabag::predict.bagging(bag.model, newdata = WD.test)
+  bst.raw <- adabag::predict.boosting(bst.model, newdata = WD.test)
+
+  prob_list[[cv]] <- list(
+    "Decision Tree" = predict(dt.model, WD.test, type = "prob")[, "High"],
+    "Naive Bayes"   = predict(nb.model, WD.test, type = "raw")[, "High"],
+    "Bagging"       = bag.raw$prob[, 2],
+    "Boosting"      = bst.raw$prob[, 2],
+    "Random Forest" = predict(rf.model, WD.test, type = "prob")[, "High"]
+  )
+
+  cat("  All models fitted for", cv, "\n")
+}
+```
+
+```{r}
+# ============================================================
+# QUESTION 5: MODEL EVALUATION - Grouped Confusion Matrices
+# ============================================================
+cat("\n========== QUESTION 5: MODEL EVALUATION ==========\n")
+
+results_list <- list()
+
+for (cv in class_vars) {
+  cat("\n---------- Class Variable:", cv, "----------\n")
+
+  actual <- WD.test[[cv]]
+
+  # Generate predictions
+  dt.pred  <- predict(get(paste0("dt_",  cv)), WD.test, type = "class")
+  nb.pred  <- predict(get(paste0("nb_",  cv)), WD.test)
+  bag.pred <- factor(predict.bagging(get(paste0("bag_", cv)),
+                                     newdata = WD.test)$class,
+                     levels = c("Low", "High"))
+  bst.pred <- factor(predict.boosting(get(paste0("bst_", cv)),
+                                      newdata = WD.test)$class,
+                     levels = c("Low", "High"))
+  rf.pred  <- predict(get(paste0("rf_",  cv)), WD.test)
+
+  # Build confusion matrices
+  cms <- list(
+    "Decision Tree" = table(Predicted = dt.pred,  Actual = actual),
+    "Naive Bayes"   = table(Predicted = nb.pred,  Actual = actual),
+    "Bagging"       = table(Predicted = bag.pred, Actual = actual),
+    "Boosting"      = table(Predicted = bst.pred, Actual = actual),
+    "Random Forest" = table(Predicted = rf.pred,  Actual = actual)
+  )
+
+  # Build 1 wide table with all 5 confusion matrices side by side ---
+  cm_wide <- data.frame(Predicted = c("Low", "High"))
+  
+  for (mn in names(cms)) {
+    cm <- as.data.frame.matrix(cms[[mn]])
+    # Add Low and High columns with model name prefix
+    cm_wide[[paste0(mn, "_Low")]]  <- c(cm["Low",  "Low"],  cm["High", "Low"])
+    cm_wide[[paste0(mn, "_High")]] <- c(cm["Low",  "High"], cm["High", "High"])
+  }
+
+  # Build header: Predicted | DT: Low High | NB: Low High | ...
+  n_models  <- length(cms)
+  col_names <- c("Predicted",
+                 unlist(lapply(names(cms), function(mn) c("Low", "High"))))
+  
+  header_top <- c(" " = 1)
+  for (mn in names(cms)) header_top[mn] <- 2
+
+  cat("\n### Confusion Matrices (All Models) –", cv, "\n")
+  print(
+    kable(cm_wide,
+          col.names = col_names,
+          caption   = paste("Confusion Matrices for all models –", cv),
+          align     = c("l", rep("c", n_models * 2))) %>%
+      kable_styling(
+        bootstrap_options = c("striped", "bordered", "condensed"),
+        full_width        = TRUE,
+        font_size         = 12) %>%
+      add_header_above(header_top) %>%
+      add_header_above(c(" " = 1, "Actual Class" = n_models * 2)) %>%
+      column_spec(1, bold = TRUE) %>%
+      row_spec(0, bold = TRUE, background = "#4472C4", color = "white")
+  )
+
+  # --- Performance Metrics Table ---
+  metrics_mat <- t(sapply(cms, get_metrics))
+  results_list[[cv]] <- metrics_mat
+
+  metrics_df       <- as.data.frame(metrics_mat)
+  metrics_df$Model <- rownames(metrics_df)
+  metrics_df       <- metrics_df[, c("Model","Accuracy","Precision","Recall","F1")]
+  rownames(metrics_df) <- NULL
+
+  best_f1_row <- which.max(metrics_df$F1)
+
+  cat("\n### Performance Metrics –", cv, "\n")
+  print(
+    kable(metrics_df,
+          caption = paste("Table: Q5 Performance Metrics –", cv),
+          digits  = 4,
+          align   = c("l","c","c","c","c")) %>%
+      kable_styling(
+        bootstrap_options = c("striped","hover","bordered","condensed"),
+        full_width        = FALSE,
+        font_size         = 13) %>%
+      row_spec(0, bold = TRUE, background = "#4472C4", color = "white") %>%
+      row_spec(best_f1_row, bold = TRUE, background = "#E8F5E9") %>%
+      column_spec(1, bold = TRUE) %>%
+      column_spec(5, bold = TRUE)
+  )
+}
+ 
+```
+
+```{r}
+# ============================================================
+# QUESTION 6: ROC Curves & AUC
+# ============================================================
+cat("\n========== QUESTION 6: ROC CURVES & AUC ==========\n")
+
+colors_roc <- c("blue", "red", "green3", "purple", "orange")
+auc_list   <- list()
+
+# ---- Plot all 3 ROC curves first ----
+for (cv in class_vars) {
+  actual_bin <- ifelse(WD.test[[cv]] == "High", 1, 0)
+  probs      <- prob_list[[cv]]
+  
+  auc_vals        <- numeric(length(model_names))
+  names(auc_vals) <- model_names
+  
+  plot(0, 0, type = "n", xlim = c(0,1), ylim = c(0,1),
+       xlab = "False Positive Rate", ylab = "True Positive Rate",
+       main = paste("ROC Curves -", cv))
+  abline(0, 1, lty = 2, col = "grey")
+  
+  for (i in seq_along(model_names)) {
+    mn  <- model_names[i]
+    prd <- ROCR::prediction(probs[[mn]], actual_bin)
+    prf <- ROCR::performance(prd, "tpr", "fpr")
+    auc <- round(ROCR::performance(prd, "auc")@y.values[[1]], 4)
+    auc_vals[mn] <- auc
+    plot(prf, col = colors_roc[i], lwd = 2, add = TRUE)
+  }
+  
+  legend("bottomright",
+         legend = paste(model_names, "| AUC:", auc_vals),
+         col    = colors_roc, lwd = 2, cex = 0.7)
+  
+  auc_list[[cv]] <- auc_vals
+}
+
+# ---- Print all 3 AUC tables after ----
+for (cv in class_vars) {
+  cat("\nAUC values for", cv, ":\n")
+  print(
+    kable(data.frame(AUC = auc_list[[cv]]),
+          caption = paste("Table: Q6 AUC -", cv),
+          digits  = 4) %>%
+      kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                    full_width = FALSE)
+  )
+}
+```
+
+```{r}
+# ============================================================
+# QUESTION 7: Compare Classifiers
+# ============================================================
+cat("\n========== QUESTION 7: CLASSIFIER COMPARISON ==========\n")
+
+# Full summary table per class variable (metrics + AUC)
+for (cv in class_vars) {
+  cat("\n--- Full performance summary for:", cv, "---\n")
+  df      <- as.data.frame(results_list[[cv]])
+  df$AUC  <- auc_list[[cv]]
+  print(kable(df,
+              caption = paste("Table: Q7 Full Metrics –", cv),
+              digits  = 4) %>%
+          kable_styling(bootstrap_options = c("striped","hover","condensed"),
+                        full_width = FALSE))
+}
+
+# Best & worst classifier per class variable by F1
+cat("\n--- Best & Worst Classifiers by F1-score ---\n")
+bw_df <- data.frame()
+for (cv in class_vars) {
+  f1s   <- results_list[[cv]][, "F1"]
+  best  <- names(which.max(f1s))
+  worst <- names(which.min(f1s))
+  bw_df <- rbind(bw_df,
+                 data.frame(ClassVar = cv,
+                            Best     = best,  BestF1  = round(max(f1s), 4),
+                            Worst    = worst, WorstF1 = round(min(f1s), 4)))
+}
+print(kable(bw_df,
+            caption = "Table: Q7 Best and Worst Classifiers by F1") %>%
+        kable_styling(bootstrap_options = c("striped","hover","condensed"),
+                      full_width = FALSE))
+
+# Worst ensemble (Bagging / Boosting / Random Forest) by average F1
+cat("\n--- Worst Ensemble by Average F1 across all class variables ---\n")
+ens_names <- c("Bagging", "Boosting", "Random Forest")
+ens_avg   <- sapply(ens_names, function(en) {
+  mean(sapply(class_vars, function(cv) results_list[[cv]][en, "F1"]))
+})
+print(kable(data.frame(Ensemble = ens_names, Avg_F1 = round(ens_avg, 4)),
+            caption = "Table: Q7 Average F1 per Ensemble Model") %>%
+        kable_styling(bootstrap_options = c("striped","hover","condensed"),
+                      full_width = FALSE))
+worst_ens <- names(which.min(ens_avg))
+cat("Worst ensemble overall:", worst_ens, "\n")
+```
+
+```{r}
+
+# ============================================================
+# QUESTION 8: Feature Importance (Ensemble Models)
+# ============================================================
+cat("\n========== QUESTION 8: FEATURE IMPORTANCE ==========\n")
+
+for (cv in class_vars) {
+  cat("\n---------- Feature Importance for:", cv, "----------\n")
+
+  bag_obj <- get(paste0("bag_", cv))
+  bst_obj <- get(paste0("bst_", cv))
+  rf_obj  <- get(paste0("rf_",  cv))
+
+  # adabag stores $importance as a named numeric vector
+  bag_imp <- sort(bag_obj$importance, decreasing = TRUE)
+  bst_imp <- sort(bst_obj$importance, decreasing = TRUE)
+  rf_imp  <- sort(importance(rf_obj)[, "MeanDecreaseGini"], decreasing = TRUE)
+
+  bag_df <- data.frame(Attribute  = names(bag_imp),
+                       Importance = round(as.vector(bag_imp), 4))
+  bst_df <- data.frame(Attribute  = names(bst_imp),
+                       Importance = round(as.vector(bst_imp), 4))
+  rf_df  <- data.frame(Attribute  = names(rf_imp),
+                       Importance = round(rf_imp, 4))
+
+  # Top-10 combined table
+  imp_combined <- data.frame(
+    Rank     = 1:10,
+    Bagging  = head(bag_df$Attribute, 10),
+    Boosting = head(bst_df$Attribute, 10),
+    RF       = head(rf_df$Attribute,  10)
+  )
+  print(kable(imp_combined,
+              caption = paste("Table: Q8 Top-10 Important Attributes –", cv)) %>%
+          kable_styling(bootstrap_options = c("striped","hover","condensed"),
+                        full_width = FALSE))
+
+  # Bar charts for all three ensemble models side by side
+  par(mfrow = c(1, 3), mar = c(8, 4, 3, 1))
+
+  barplot(head(bag_df$Importance, 15),
+          names.arg = head(bag_df$Attribute, 15),
+          las = 2, col = "steelblue", cex.names = 0.65,
+          main = paste("(a) Bagging –", cv),
+          ylab = "Importance")
+
+  barplot(head(bst_df$Importance, 15),
+          names.arg = head(bst_df$Attribute, 15),
+          las = 2, col = "tomato", cex.names = 0.65,
+          main = paste("(b) Boosting –", cv),
+          ylab = "Importance")
+
+  barplot(head(rf_df$Importance, 15),
+          names.arg = head(rf_df$Attribute, 15),
+          las = 2, col = "seagreen", cex.names = 0.65,
+          main = paste("(c) Random Forest –", cv),
+          ylab = "Mean Decrease Gini")
+
+  mtext(paste("Figure: Feature Importance –", cv),
+        outer = TRUE, line = -1.5, cex = 0.9)
+  par(mfrow = c(1, 1), mar = c(5, 4, 4, 2))
+}
+```
+
+```{r}
+# ============================================================
+# QUESTION 9: Strengths & Weaknesses Reference Tables
+# ============================================================
+cat("\n========== QUESTION 9: MODEL COMPARISON SUMMARY ==========\n")
+
+for (cv in class_vars) {
+  cat("\n--- Full performance summary for:", cv, "---\n")
+  df      <- as.data.frame(results_list[[cv]])
+  df$AUC  <- auc_list[[cv]]
+  print(kable(df,
+              caption = paste("Table: Q9 Reference –", cv),
+              digits  = 4) %>%
+          kable_styling(bootstrap_options = c("striped","hover","condensed"),
+                        full_width = FALSE))
+}
+```
+
+```{r}
+# ============================================================
+# QUESTION 10: Improve the Worst Ensemble Model ##############
+# ============================================================
+cat("\n========== QUESTION 10: IMPROVE WORST ENSEMBLE ==========\n")
+cat("Worst ensemble identified:", worst_ens, "\n")
+
+# --- Attribute selection: union of top-15 RF features per class variable ---
+top_attrs_list <- lapply(class_vars, function(cv) {
+  rf_imp <- importance(get(paste0("rf_", cv)))[, "MeanDecreaseGini"]
+  names(sort(rf_imp, decreasing = TRUE))[1:15]
+})
+top_attrs <- unique(unlist(top_attrs_list))
+top_attrs <- intersect(top_attrs, pred_cols)
+cat("Top attributes selected for improved model:", length(top_attrs), "\n")
+cat(paste(top_attrs, collapse = ", "), "\n")
+
+improved_results <- list()
+improved_probs   <- list()
+
+for (cv in class_vars) {
+  cat("\n--- Improved model for:", cv, "---\n")
+  fml_imp <- make_formula(cv, top_attrs)
+
+  if (worst_ens == "Boosting") {
+    imp.model <- adabag::boosting(fml_imp, data = WD.train,
+                                   mfinal = 100, coeflearn = "Breiman")
+    imp.raw   <- adabag::predict.boosting(imp.model, newdata = WD.test)
+    imp.class <- factor(imp.raw$class, levels = c("Low", "High"))
+    imp.prob  <- imp.raw$prob[, 2]   # col 2 = "High"
+
+  } else if (worst_ens == "Bagging") {
+    imp.model <- adabag::bagging(fml_imp, data = WD.train, mfinal = 100)
+    imp.raw   <- adabag::predict.bagging(imp.model, newdata = WD.test)
+    imp.class <- factor(imp.raw$class, levels = c("Low", "High"))
+    imp.prob  <- imp.raw$prob[, 2]   # col 2 = "High"
+
+  } else {
+    # Random Forest
+    imp.model <- randomForest(fml_imp, data = WD.train,
+                               ntree      = 200,
+                               mtry       = floor(sqrt(length(top_attrs))),
+                               importance = TRUE)
+    imp.class <- predict(imp.model, WD.test)
+    imp.prob  <- predict(imp.model, WD.test, type = "prob")[, "High"]
+  }
+
+  actual  <- WD.test[[cv]]
+  cm_imp  <- table(Predicted = imp.class, Actual = actual)
+  cat("Confusion matrix (improved):\n")
+  print(cm_imp)
+
+  metrics_imp <- get_metrics(cm_imp)
+  orig_f1     <- results_list[[cv]][worst_ens, "F1"]
+  cat(sprintf("  Original %s F1: %.4f  |  Improved F1: %.4f\n",
+              worst_ens, orig_f1, metrics_imp["F1"]))
+
+  improved_results[[cv]] <- metrics_imp
+  improved_probs[[cv]]   <- imp.prob
+}
+
+# ROC curves: original vs improved
+cat("\n--- ROC curves: original vs improved ---\n")
+for (cv in class_vars) {
+  actual_bin <- ifelse(WD.test[[cv]] == "High", 1, 0)
+  orig_prob  <- prob_list[[cv]][[worst_ens]]
+  imp_prob   <- improved_probs[[cv]]
+
+  prd_orig <- ROCR::prediction(orig_prob, actual_bin)
+  prd_imp  <- ROCR::prediction(imp_prob,  actual_bin)
+  prf_orig <- ROCR::performance(prd_orig, "tpr", "fpr")
+  prf_imp  <- ROCR::performance(prd_imp,  "tpr", "fpr")
+  auc_orig <- round(ROCR::performance(prd_orig, "auc")@y.values[[1]], 4)
+  auc_imp  <- round(ROCR::performance(prd_imp,  "auc")@y.values[[1]], 4)
+
+  plot(prf_orig, col = "red",  lwd = 2,
+       main = paste("Figure: Q10 Improved", worst_ens, "–", cv))
+  plot(prf_imp,  col = "blue", lwd = 2, add = TRUE)
+  abline(0, 1, lty = 2, col = "grey")
+  legend("bottomright",
+         legend = c(paste("Original AUC:", auc_orig),
+                    paste("Improved AUC:", auc_imp)),
+         col = c("red", "blue"), lwd = 2)
+
+  # Comparison table
+  orig_m  <- results_list[[cv]][worst_ens, ]
+  comp_df <- data.frame(
+    Model     = c("Original", "Improved"),
+    Accuracy  = c(orig_m["Accuracy"],  improved_results[[cv]]["Accuracy"]),
+    Precision = c(orig_m["Precision"], improved_results[[cv]]["Precision"]),
+    Recall    = c(orig_m["Recall"],    improved_results[[cv]]["Recall"]),
+    F1        = c(orig_m["F1"],        improved_results[[cv]]["F1"]),
+    AUC       = c(auc_orig,            auc_imp)
+  )
+  print(kable(comp_df,
+              caption = paste("Table: Q10 Original vs Improved –", cv),
+              digits  = 4) %>%
+          kable_styling(bootstrap_options = c("striped","hover","condensed"),
+                        full_width = FALSE))
+}
+```
+
+```{r}
+# ============================================================
+# QUESTION 11: Artificial Neural Network
+# ============================================================
+cat("\n========== QUESTION 11: ARTIFICIAL NEURAL NETWORK ==========\n")
+
+# Identify country with most observations
+country_counts <- sort(table(WD_clean$Country), decreasing = TRUE)
+cat("Observations per country (top 5):\n")
+print(head(country_counts, 5))
+
+top_country <- names(country_counts)[1]
+cat("Selected country:", top_country, "\n")
+
+# Bar chart: all countries, selected one highlighted in red
+par(mar = c(8, 4, 3, 1))
+barplot(country_counts,
+        las       = 2,
+        col       = ifelse(names(country_counts) == top_country,
+                           "tomato", "steelblue"),
+        main      = paste("Figure: Observations per Country (selected =",
+                          top_country, "in red)"),
+        ylab      = "Count",
+        cex.names = 0.55)
+par(mar = c(5, 4, 4, 2))
+
+# Select class variable for ANN
+# Using first class variable (CWomensMvt) based on Q8 insights
+cv_ann <- class_vars[1]
+cat("Class variable for ANN:", cv_ann, "\n")
+
+# Step 3: Subset ALL cleaned data for selected country
+WD_country_all <- WD_clean[WD_clean$Country == top_country, ]
+cat("Total observations for", top_country, ":", nrow(WD_country_all), "\n")
+
+# Also prepare test subset for Q12 wave evaluation
+WD_test_country <- WD.test[WD.test$Country == top_country, ]
+cat("Test observations for", top_country, ":", nrow(WD_test_country), "\n")
+
+# Select top predictors from Q8 feature importance
+top_ann_attrs <- unique(unlist(lapply(class_vars, function(cv) {
+  rf_imp <- importance(get(paste0("rf_", cv)))[, "MeanDecreaseGini"]
+  names(sort(rf_imp, decreasing = TRUE))[1:10]
+})))
+top_ann_attrs <- intersect(top_ann_attrs, pred_cols)
+cat("Number of selected predictors for ANN:", length(top_ann_attrs), "\n")
+cat("Selected predictors:", paste(top_ann_attrs, collapse = ", "), "\n")
+
+# ANN Pre-processing — standardise numeric predictors
+num_ann_cols <- top_ann_attrs[sapply(WD_country_all[top_ann_attrs], is.numeric)]
+
+sc_mean           <- apply(WD_country_all[num_ann_cols], 2, mean)
+sc_sd             <- apply(WD_country_all[num_ann_cols], 2, sd)
+sc_sd[sc_sd == 0] <- 1   # prevent division by zero for constant columns
+
+# Scale ALL country data (used for training in Q11)
+WD_ann_all <- WD_country_all
+WD_ann_all[num_ann_cols] <- scale(WD_country_all[num_ann_cols],
+                                   center = sc_mean,
+                                   scale  = sc_sd)
+
+# Add WaveNum: numeric version of Wave for temporal modelling (Q12)
+WD_ann_all$WaveNum <- as.numeric(as.character(WD_ann_all$Wave))
+
+# Scale test country data using SAME parameters (no re-fitting)
+WD_test_ann <- WD_test_country
+WD_test_ann[num_ann_cols] <- scale(WD_test_country[num_ann_cols],
+                                    center = sc_mean,
+                                    scale  = sc_sd)
+WD_test_ann$WaveNum <- as.numeric(as.character(WD_test_ann$Wave))
+
+# Final predictor set (scaled numeric + WaveNum)
+ann_preds <- c(num_ann_cols, "WaveNum")
+cat("Final ANN predictor count:", length(ann_preds), "\n")
+
+# Build and train ANN on ALL country data
+# Architecture: 1 hidden layer, 5 hidden units
+#   - nnet uses logistic (sigmoid) activation by default
+#   - decay = 0.01 is L2 regularisation to reduce overfitting
+#   - maxit = 300 allows sufficient convergence
+#   - size = 5 chosen as a balance between capacity and overfitting
+#     given the moderate dataset size for one country
+fml_ann <- make_formula(cv_ann, ann_preds)
+
+set.seed(33986010)
+ann.model <- nnet(fml_ann,
+                  data   = WD_ann_all,   # ALL country data, not just 70%
+                  size   = 5,
+                  maxit  = 300,
+                  decay  = 0.01,
+                  trace  = FALSE)
+
+cat("ANN architecture: input =", length(ann_preds),
+    "| hidden = 5 | output = 1 (sigmoid)\n")
+cat("Total weights:", length(ann.model$wts), "\n")
+
+
+# Evaluate on full country test set
+ann.prob  <- predict(ann.model, WD_test_ann)
+ann.class <- factor(ifelse(ann.prob > 0.5, "High", "Low"),
+                    levels = c("Low", "High"))
+
+actual_ann <- WD_test_ann[[cv_ann]]
+cm_ann     <- table(Predicted = ann.class, Actual = actual_ann)
+cat("\nANN Confusion Matrix (", top_country, "):\n")
+print(cm_ann)
+
+metrics_ann <- get_metrics(cm_ann)
+
+print(
+  kable(data.frame(Metric = names(metrics_ann),
+                   Value  = as.numeric(metrics_ann)),
+        caption = paste("Table: Q11 ANN Metrics –", top_country, "|", cv_ann),
+        digits  = 4) %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                  full_width = FALSE) %>%
+    row_spec(0, bold = TRUE, background = "#4472C4", color = "white")
+)
+
+
+# ROC Curve for ANN
+actual_bin_ann <- ifelse(actual_ann == "High", 1, 0)
+prd_ann        <- ROCR::prediction(ann.prob, actual_bin_ann)
+prf_ann        <- ROCR::performance(prd_ann, "tpr", "fpr")
+auc_ann        <- round(ROCR::performance(prd_ann, "auc")@y.values[[1]], 4)
+
+plot(prf_ann, col = "darkgreen", lwd = 2,
+     main = paste("Figure: Q11 ANN ROC –", top_country, "|", cv_ann),
+     xlab = "False Positive Rate",
+     ylab = "True Positive Rate")
+abline(0, 1, lty = 2, col = "grey")
+legend("bottomright",
+       legend = paste("AUC:", auc_ann),
+       col    = "darkgreen", lwd = 2)
+
+cat("Q11 ANN AUC:", auc_ann, "\n")
+
+```
+
+```{r}
+# ============================================================
+# QUESTION 12: ANN Performance Over Two Waves
+# ============================================================
+cat("\n========== QUESTION 12: ANN PERFORMANCE BY WAVE ==========\n")
+
+# Identify the two waves with most TEST observations
+# for the selected country
+
+wave_counts_test <- sort(table(WD_test_ann$Wave), decreasing = TRUE)
+wave_counts_test <- wave_counts_test[wave_counts_test > 0]  # drop empty levels
+
+cat("Test observations per wave for", top_country, ":\n")
+print(wave_counts_test)
+
+top2_waves <- names(head(wave_counts_test, 2))
+cat("Top 2 waves selected:", paste(top2_waves, collapse = ", "), "\n")
+
+# Evaluate ANN separately for each of the two waves
+# The SAME trained model from Q11 is used (no retraining)
+wave_metrics_list <- list()
+wave_auc_list     <- list()
+wave_prob_list    <- list()
+wave_actual_list  <- list()
+
+col_wave <- c("blue", "red")
+
+par(mfrow = c(1, 2))
+
+for (i in seq_along(top2_waves)) {
+  wv   <- top2_waves[i]
+  tdat <- WD_test_ann[WD_test_ann$Wave == wv, ]
+  cat("\n--- Wave", wv, "| N test:", nrow(tdat), "---\n")
+
+  # Predict using Q11 model
+  wp <- predict(ann.model, tdat)
+  wc <- factor(ifelse(wp > 0.5, "High", "Low"), levels = c("Low", "High"))
+  wa <- tdat[[cv_ann]]
+
+  # Confusion matrix
+  cm_w <- table(Predicted = wc, Actual = wa)
+  cat("Confusion Matrix – Wave", wv, ":\n")
+  print(cm_w)
+
+  # Metrics
+  m_w <- get_metrics(cm_w)
+  wave_metrics_list[[wv]] <- m_w
+
+  # ROC & AUC
+  actual_bin_w <- ifelse(wa == "High", 1, 0)
+  prd_w        <- ROCR::prediction(wp, actual_bin_w)
+  prf_w        <- ROCR::performance(prd_w, "tpr", "fpr")
+  auc_w        <- round(ROCR::performance(prd_w, "auc")@y.values[[1]], 4)
+  wave_auc_list[[wv]]    <- auc_w
+  wave_prob_list[[wv]]   <- wp
+  wave_actual_list[[wv]] <- actual_bin_w
+
+  # Individual ROC plot (side by side)
+  plot(prf_w, col = col_wave[i], lwd = 2,
+       main = paste("Figure: Q12 Wave", wv, "–", top_country),
+       xlab = "False Positive Rate",
+       ylab = "True Positive Rate")
+  abline(0, 1, lty = 2, col = "grey")
+  legend("bottomright",
+         legend = paste("AUC:", auc_w),
+         col    = col_wave[i], lwd = 2)
+
+  cat("Wave", wv, "AUC:", auc_w, "\n")
+}
+
+par(mfrow = c(1, 1))
+
+
+# Combined ROC plot — both waves on same axis
+plot(0, 0, type = "n", xlim = c(0,1), ylim = c(0,1),
+     xlab = "False Positive Rate",
+     ylab = "True Positive Rate",
+     main = paste("Figure: Q12 ANN ROC by Wave –", top_country, "|", cv_ann))
+abline(0, 1, lty = 2, col = "grey")
+
+for (i in seq_along(top2_waves)) {
+  wv   <- top2_waves[i]
+  prd_w <- ROCR::prediction(wave_prob_list[[wv]], wave_actual_list[[wv]])
+  prf_w <- ROCR::performance(prd_w, "tpr", "fpr")
+  plot(prf_w, col = col_wave[i], lwd = 2, add = TRUE)
+}
+
+legend("bottomright",
+       legend = paste("Wave", top2_waves,
+                      "| AUC:", sapply(top2_waves,
+                                       function(w) wave_auc_list[[w]])),
+       col    = col_wave, lwd = 2, cex = 0.85)
+
+
+# Summary comparison table across the two waves
+wave_summary_df <- do.call(rbind, lapply(top2_waves, function(wv) {
+  data.frame(
+    Wave      = wv,
+    N_Test    = sum(WD_test_ann$Wave == wv),
+    Accuracy  = wave_metrics_list[[wv]]["Accuracy"],
+    Precision = wave_metrics_list[[wv]]["Precision"],
+    Recall    = wave_metrics_list[[wv]]["Recall"],
+    F1        = wave_metrics_list[[wv]]["F1"],
+    AUC       = wave_auc_list[[wv]]
+  )
+}))
+rownames(wave_summary_df) <- NULL
+
+cat("\nQ12: ANN Performance Comparison by Wave\n")
+print(
+  kable(wave_summary_df,
+        caption = paste("Table: Q12 ANN Performance by Wave –",
+                        top_country, "|", cv_ann),
+        digits  = 4,
+        align   = c("c","c","c","c","c","c","c")) %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                  full_width = FALSE) %>%
+    row_spec(0, bold = TRUE, background = "#4472C4", color = "white") %>%
+    column_spec(1, bold = TRUE)
+)
+
+# Change summary (difference between waves)
+if (length(top2_waves) == 2) {
+  delta_f1  <- round(wave_metrics_list[[top2_waves[2]]]["F1"] -
+                     wave_metrics_list[[top2_waves[1]]]["F1"], 4)
+  delta_auc <- round(wave_auc_list[[top2_waves[2]]] -
+                     wave_auc_list[[top2_waves[1]]], 4)
+  cat(sprintf("\nChange from Wave %s to Wave %s:\n",
+              top2_waves[1], top2_waves[2]))
+  cat(sprintf("  Delta F1  : %+.4f\n", delta_f1))
+  cat(sprintf("  Delta AUC : %+.4f\n", delta_auc))
+}
+```
